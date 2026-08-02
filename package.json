@@ -1,0 +1,13 @@
+{
+  "name": "lotopro",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "typecheck": "pnpm -r --parallel typecheck",
+    "test": "pnpm -r --parallel test"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  },
+  "packageManager": "pnpm@9.15.9"
+}

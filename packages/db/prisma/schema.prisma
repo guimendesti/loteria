@@ -1,0 +1,619 @@
+// LotoPro — Prisma schema
+// Transcrito fielmente de docs/07-modelo-de-dados.md §7.3–§7.7.
+// Não redesenhar aqui — mudanças de modelo entram primeiro na documentação.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// §7.3 Núcleo de loterias (dados de referência)
+// ─────────────────────────────────────────────────────────────────────────
+
+model Lottery {
+  id              String        @id @default(cuid())
+  slug            String        @unique // "megasena"
+  name            String // "Mega-Sena"
+  caixaApiSlug    String // slug usado na API da Caixa
+  format          LotteryFormat // PICK_N | COLUMNS | MATCH_LIST
+  universeMin     Int // 1
+  universeMax     Int // 60
+  picksMin        Int // 6
+  picksMax        Int // 20
+  drawsPerContest Int           @default(1) // Dupla Sena = 2
+  extraField      Json? // { kind: "CLOVER", min: 1, max: 6, picksMin: 2, picksMax: 6 }
+  drawSchedule    Json // { days: [2,4,0], time: "21:00", cutoffMinutes: 60, tz: "America/Sao_Paulo" }
+  colorToken      String // "lottery-megasena"
+  isActive        Boolean       @default(true)
+  displayOrder    Int
+  createdAt       DateTime      @default(now())
+
+  contests        Contest[]
+  priceTiers      PriceTier[]
+  prizeTiers      PrizeTier[]
+  closureMatrices ClosureMatrix[]
+  bets            Bet[]
+  pools           Pool[]
+}
+
+enum LotteryFormat {
+  PICK_N
+  COLUMNS
+  MATCH_LIST
+}
+
+/// price_tiers (versionado)
+/// ⚠️ Nunca fazer UPDATE de preço. Reajuste = fechar validUntil do registro atual e INSERT de um novo (M9).
+model PriceTier {
+  id         String    @id @default(cuid())
+  lotteryId  String
+  picks      Int // nº de dezenas
+  extraPicks Int? // nº de trevos (+Milionária)
+  priceCents BigInt // 600 = R$ 6,00
+  validFrom  DateTime
+  validUntil DateTime? // null = vigente
+
+  lottery Lottery @relation(fields: [lotteryId], references: [id])
+
+  @@index([lotteryId, picks, validFrom])
+}
+
+model PrizeTier {
+  id            String  @id @default(cuid())
+  lotteryId     String
+  tier          Int // 1 = faixa principal
+  label         String // "Sena", "15 acertos", "20 acertos"
+  hits          Int // acertos necessários
+  extraHits     Int? // trevos necessários (+Milionária)
+  drawIndex     Int? // Dupla Sena: 1º ou 2º sorteio
+  isSpecialRule Boolean @default(false) // Lotomania: 0 acertos premia
+
+  lottery Lottery @relation(fields: [lotteryId], references: [id])
+
+  @@unique([lotteryId, tier])
+}
+
+/// rawPayload é essencial: se descobrirmos um bug no parser meses depois, reprocessamos sem chamar a API.
+model Contest {
+  id                   String    @id @default(cuid())
+  lotteryId            String
+  number               Int
+  drawDate             DateTime
+  numbers              Int[] // dezenas sorteadas (ordenadas)
+  numbersDrawOrder     Int[] // ordem de extração
+  extraResult          Json? // { clovers: [2,5] } | { month: 7 } | { team: "..." }
+  secondaryNumbers     Int[] // Dupla Sena — 2º sorteio
+  isAccumulated        Boolean   @default(false)
+  isSpecial            Boolean   @default(false)
+  collectedCents       BigInt? // valorArrecadado
+  accumulatedNextCents BigInt?
+  estimatedNextCents   BigInt?
+  drawLocation         String?
+  rawPayload           Json // payload original da API — auditoria e reprocessamento
+  settledAt            DateTime? // quando a conferência foi disparada
+  createdAt            DateTime  @default(now())
+
+  lottery Lottery        @relation(fields: [lotteryId], references: [id])
+  prizes  ContestPrize[]
+  checks  BetCheck[]
+
+  @@unique([lotteryId, number])
+  @@index([lotteryId, drawDate(sort: Desc)])
+  @@index([settledAt])
+}
+
+model ContestPrize {
+  id           String @id @default(cuid())
+  contestId    String
+  tier         Int
+  label        String
+  winnersCount Int
+  prizeCents   BigInt
+
+  contest Contest @relation(fields: [contestId], references: [id])
+
+  @@unique([contestId, tier])
+}
+
+/// A matriz guarda índices posicionais (1..poolSize), não dezenas. Em runtime, mapeia-se para as dezenas
+/// que o usuário escolheu. Uma matriz serve para qualquer conjunto de dezenas do mesmo tamanho.
+model ClosureMatrix {
+  id            String    @id @default(cuid())
+  lotteryId     String
+  poolSize      Int // dezenas escolhidas (ex.: 18)
+  picksPerBet   Int // dezenas por jogo (ex.: 15)
+  guaranteeHits Int // garante N pontos...
+  ifHits        Int // ...se acertar M das escolhidas
+  betCount      Int // nº de jogos gerados
+  matrix        Json // [[1,2,3,...], ...] índices 1..poolSize
+  source        String // proveniência
+  verifiedAt    DateTime? // ⚠️ null = NUNCA expor ao usuário
+  createdAt     DateTime  @default(now())
+
+  lottery Lottery @relation(fields: [lotteryId], references: [id])
+
+  @@unique([lotteryId, poolSize, picksPerBet, guaranteeHits, ifHits])
+  @@index([lotteryId, poolSize])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// §7.4 Usuários e assinaturas
+// ─────────────────────────────────────────────────────────────────────────
+
+model Tenant {
+  id        String     @id @default(cuid())
+  slug      String     @unique
+  name      String
+  type      TenantType @default(PLATFORM) // PLATFORM | WHITE_LABEL
+  branding  Json? // logo, cores, domínio
+  isActive  Boolean    @default(true)
+  createdAt DateTime   @default(now())
+
+  users User[]
+}
+
+enum TenantType {
+  PLATFORM
+  WHITE_LABEL
+}
+
+model User {
+  id              String      @id @default(cuid())
+  tenantId        String
+  email           String
+  emailVerifiedAt DateTime?
+  name            String
+  phone           String?
+  passwordHash    String? // null se só OAuth
+  avatarUrl       String?
+  role            UserRole    @default(CUSTOMER)
+  isAdult         Boolean     @default(false) // declaração obrigatória
+  pixKeyEncrypted String? // AES-256-GCM — só para organizador de bolão
+  pixKeyType      PixKeyType?
+  timezone        String      @default("America/Sao_Paulo")
+  lastSeenAt      DateTime?
+  deletedAt       DateTime? // soft delete / anonimização LGPD
+  createdAt       DateTime    @default(now())
+
+  tenant                 Tenant                  @relation(fields: [tenantId], references: [id])
+  subscription           Subscription?
+  bets                   Bet[]
+  ownedPools             Pool[]                  @relation("PoolOwner")
+  poolMemberships        PoolMember[]
+  strategies             Strategy[]
+  notificationPreference NotificationPreference?
+  usageCounters          UsageCounter[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId, deletedAt])
+}
+
+enum UserRole {
+  CUSTOMER
+  SUPPORT
+  FINANCE
+  ADMIN
+}
+
+enum PixKeyType {
+  CPF
+  CNPJ
+  EMAIL
+  PHONE
+  RANDOM
+}
+
+model Plan {
+  id                String  @id @default(cuid())
+  slug              String  @unique // "free" | "premium" | "pro" | "whitelabel"
+  name              String
+  priceMonthlyCents BigInt
+  priceYearlyCents  BigInt
+  entitlements      Json // ver packages/core/entitlements
+  isPublic          Boolean @default(true)
+  displayOrder      Int
+
+  subscriptions Subscription[]
+}
+
+model Subscription {
+  id                    String        @id @default(cuid())
+  userId                String        @unique
+  planId                String
+  status                SubStatus
+  billingCycle          BillingCycle
+  paymentMethod         PaymentMethod
+  gatewaySubscriptionId String? // ID no Asaas
+  currentPeriodStart    DateTime
+  currentPeriodEnd      DateTime
+  trialEndsAt           DateTime?
+  cancelAtPeriodEnd     Boolean       @default(false)
+  canceledAt            DateTime?
+  cancelReason          String?
+  createdAt             DateTime      @default(now())
+
+  user     User      @relation(fields: [userId], references: [id])
+  plan     Plan      @relation(fields: [planId], references: [id])
+  invoices Invoice[]
+
+  @@index([status, currentPeriodEnd])
+}
+
+enum SubStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  EXPIRED
+}
+
+enum BillingCycle {
+  MONTHLY
+  YEARLY
+}
+
+enum PaymentMethod {
+  PIX_AUTOMATIC
+  CREDIT_CARD
+  BOLETO
+}
+
+model Invoice {
+  id               String        @id @default(cuid())
+  subscriptionId   String
+  amountCents      BigInt
+  status           InvoiceStatus
+  method           PaymentMethod
+  gatewayInvoiceId String?       @unique
+  dueAt            DateTime
+  paidAt           DateTime?
+  attempts         Int           @default(0)
+  failureReason    String?
+  createdAt        DateTime      @default(now())
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id])
+
+  @@index([status, dueAt])
+}
+
+enum InvoiceStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+  CANCELED
+}
+
+model UsageCounter {
+  id        String   @id @default(cuid())
+  userId    String
+  metric    String // "ocr_scans" | "ai_messages" | "backtests"
+  period    String // "2026-08"
+  used      Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([userId, metric, period])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// §7.5 Apostas
+// Modelo multi-concurso: contestFrom/contestTo evita criar N linhas para um jogo que vale N concursos.
+// A conferência varre WHERE lotteryId = ? AND isActive AND contestFrom <= N AND contestTo >= N.
+// ─────────────────────────────────────────────────────────────────────────
+
+model Bet {
+  id          String    @id @default(cuid())
+  tenantId    String
+  userId      String
+  lotteryId   String
+  poolId      String? // null = aposta pessoal
+  batchId     String? // agrupa jogos gerados juntos
+  strategyId  String?
+  numbers     Int[] // dezenas escolhidas
+  extraPicks  Json? // { clovers: [2,5] } | { month: 7 } | { team: "..." }
+  columns     Json? // Super Sete: [[1],[2,3],...]
+  matchPicks  Json? // Loteca
+  costCents   BigInt // congelado na criação (usa price_tier vigente)
+  contestFrom Int // vale a partir deste concurso
+  contestTo   Int // até este (inclusive) — multi-concurso
+  source      BetSource @default(MANUAL) // MANUAL | GENERATED | OCR | IMPORT | CLOSURE
+  receiptUrl  String? // comprovante no R2
+  notes       String?
+  isActive    Boolean   @default(true)
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  user     User       @relation(fields: [userId], references: [id])
+  lottery  Lottery    @relation(fields: [lotteryId], references: [id])
+  pool     Pool?      @relation(fields: [poolId], references: [id])
+  strategy Strategy?  @relation(fields: [strategyId], references: [id])
+  checks   BetCheck[]
+
+  // ★ índice crítico da conferência
+  @@index([lotteryId, isActive, contestFrom, contestTo])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([poolId])
+  @@index([tenantId])
+}
+
+enum BetSource {
+  MANUAL
+  GENERATED
+  OCR
+  IMPORT
+  CLOSURE
+}
+
+model BetCheck {
+  id         String   @id @default(cuid())
+  betId      String
+  contestId  String
+  hits       Int
+  hitNumbers Int[]
+  extraHits  Int?
+  prizeTier  Int? // null = não premiado
+  prizeCents BigInt   @default(0)
+  drawIndex  Int? // Dupla Sena
+  checkedAt  DateTime @default(now())
+
+  bet     Bet     @relation(fields: [betId], references: [id])
+  contest Contest @relation(fields: [contestId], references: [id])
+
+  @@unique([betId, contestId, drawIndex]) // ★ idempotência
+  @@index([contestId, prizeTier])
+}
+
+model Strategy {
+  id         String   @id @default(cuid())
+  userId     String
+  lotteryId  String
+  name       String
+  filters    Json // { evenOdd:{min,max}, sum:{min,max}, primes:{...}, repeats:{...} }
+  isFavorite Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  user User  @relation(fields: [userId], references: [id])
+  bets Bet[]
+
+  @@index([userId, lotteryId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// §7.6 Bolões
+// ⚠️ Nenhum campo desta seção representa saldo custodiado pelo LotoPro. pool_payments e pool_payouts
+// registram transferências P2P que ocorrem fora do sistema.
+//
+// Regra de rateio (implementação obrigatória, ver packages/core/pool):
+//   valor_do_membro = floor(prêmio_total × cotas_do_membro / cotas_totais)
+//   resto = prêmio_total − Σ valores
+//   → o resto (centavos) vai para o organizador, com nota explícita na UI
+// ─────────────────────────────────────────────────────────────────────────
+
+model Pool {
+  id                String      @id @default(cuid())
+  tenantId          String
+  ownerId           String
+  lotteryId         String
+  name              String
+  description       String?
+  contestFrom       Int
+  contestTo         Int
+  totalShares       Int // total de cotas
+  shareValueCents   BigInt // valor por cota
+  totalCostCents    BigInt // custo total dos jogos
+  inviteCode        String      @unique // código do link de convite
+  inviteExpiresAt   DateTime?
+  status            PoolStatus  @default(DRAFT)
+  ownerPixKeyType   PixKeyType? // snapshot no momento da criação
+  ownerPixKeyEnc    String?
+  receiptUrl        String? // comprovante oficial da aposta
+  receiptUploadedAt DateTime?
+  rulesAcceptedAt   DateTime? // organizador aceitou os termos de responsabilidade
+  closedAt          DateTime?
+  createdAt         DateTime    @default(now())
+
+  owner   User         @relation("PoolOwner", fields: [ownerId], references: [id])
+  lottery Lottery      @relation(fields: [lotteryId], references: [id])
+  members PoolMember[]
+  bets    Bet[]
+  payouts PoolPayout[]
+
+  @@index([ownerId, status])
+  @@index([inviteCode])
+}
+
+enum PoolStatus {
+  DRAFT
+  OPEN
+  CLOSED
+  BET_PLACED
+  SETTLED
+  CANCELED
+}
+
+model PoolMember {
+  id          String       @id @default(cuid())
+  poolId      String
+  userId      String? // null = convidado sem conta ainda
+  guestName   String?
+  guestPhone  String?
+  shares      Int
+  amountCents BigInt // shares × shareValueCents
+  status      MemberStatus @default(INVITED)
+  joinedAt    DateTime?
+  createdAt   DateTime     @default(now())
+
+  pool     Pool          @relation(fields: [poolId], references: [id])
+  user     User?         @relation(fields: [userId], references: [id])
+  payments PoolPayment[]
+  payouts  PoolPayout[]
+
+  @@unique([poolId, userId])
+  @@index([poolId, status])
+}
+
+enum MemberStatus {
+  INVITED
+  JOINED
+  PAID
+  CONFIRMED
+  REMOVED
+}
+
+/// Registro de um Pix P2P participante → organizador. O LotoPro NÃO processa este valor.
+model PoolPayment {
+  id           String               @id @default(cuid())
+  poolMemberId String
+  amountCents  BigInt
+  pixPayload   String? // copia-e-cola gerado (EMV), chave do ORGANIZADOR
+  pixTxid      String? // identificador do payload
+  confirmedBy  PaymentConfirmation? // OWNER_MANUAL | MEMBER_DECLARED
+  confirmedAt  DateTime?
+  proofUrl     String? // comprovante enviado pelo participante
+  createdAt    DateTime             @default(now())
+
+  poolMember PoolMember @relation(fields: [poolMemberId], references: [id])
+
+  @@index([poolMemberId])
+}
+
+enum PaymentConfirmation {
+  OWNER_MANUAL
+  MEMBER_DECLARED
+}
+
+/// Cálculo do rateio. Também não é movimentação financeira nossa.
+model PoolPayout {
+  id              String       @id @default(cuid())
+  poolId          String
+  poolMemberId    String
+  contestId       String
+  grossPrizeCents BigInt // prêmio total do bolão no concurso
+  sharesRatio     Decimal      @db.Decimal(10, 8) // cotas do membro / total
+  amountCents     BigInt // valor devido a este membro
+  pixPayload      String? // Pix organizador → membro
+  status          PayoutStatus @default(PENDING)
+  paidAt          DateTime?
+  createdAt       DateTime     @default(now())
+
+  pool       Pool       @relation(fields: [poolId], references: [id])
+  poolMember PoolMember @relation(fields: [poolMemberId], references: [id])
+
+  @@unique([poolMemberId, contestId])
+  @@index([poolId, status])
+}
+
+enum PayoutStatus {
+  PENDING
+  DECLARED_PAID
+  CONFIRMED
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// §7.7 Notificações, auditoria e operação
+// ─────────────────────────────────────────────────────────────────────────
+
+model NotificationPreference {
+  id                        String  @id @default(cuid())
+  userId                    String  @unique
+  emailEnabled              Boolean @default(true)
+  pushEnabled               Boolean @default(true)
+  whatsappEnabled           Boolean @default(false)
+  onlyWhenPrized            Boolean @default(false) // notificar só se ganhou
+  accumulatedThresholdCents BigInt? // alerta de acumulado
+  cutoffReminder            Boolean @default(true)
+  marketingOptIn            Boolean @default(false) // LGPD: opt-in separado
+  quietHoursStart           String? // "22:00"
+  quietHoursEnd             String?
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model Notification {
+  id        String              @id @default(cuid())
+  userId    String
+  channel   NotificationChannel
+  type      String // "bet.prized" | "contest.accumulated" | ...
+  title     String
+  body      String
+  payload   Json?
+  status    NotificationStatus  @default(QUEUED)
+  sentAt    DateTime?
+  readAt    DateTime?
+  error     String?
+  createdAt DateTime            @default(now())
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status, createdAt])
+}
+
+enum NotificationChannel {
+  EMAIL
+  PUSH
+  WHATSAPP
+  IN_APP
+}
+
+enum NotificationStatus {
+  QUEUED
+  SENT
+  FAILED
+  READ
+}
+
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actorRole  String?
+  action     String // "user.plan_changed" | "pool.deleted" | ...
+  entityType String
+  entityId   String
+  before     Json?
+  after      Json?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt(sort: Desc)])
+}
+
+model WebhookEvent {
+  id          String    @id @default(cuid())
+  provider    String // "asaas"
+  externalId  String
+  eventType   String
+  payload     Json
+  processedAt DateTime?
+  error       String?
+  createdAt   DateTime  @default(now())
+
+  @@unique([provider, externalId]) // ★ idempotência de webhook
+}
+
+model FeatureFlag {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  description String?
+  isEnabled   Boolean  @default(false)
+  rolloutPct  Int      @default(0)
+  targetPlans String[]
+  updatedAt   DateTime @updatedAt
+}

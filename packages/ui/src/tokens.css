@@ -1,0 +1,94 @@
+/**
+ * LotoPro — Design tokens (CSS custom properties)
+ * Fonte única da verdade dos valores: docs/09-design-system-e-ux.md §9.2.
+ * Espelha src/tokens.ts — qualquer mudança de valor deve ser replicada nos dois arquivos.
+ *
+ * Uso: importar uma única vez na raiz do app, ex. em apps/web:
+ *   @import '@lotopro/ui/src/tokens.css';
+ */
+
+:root {
+  /* ─── Brand — verde LotoPro. Uso: CTAs primários, marca, links, foco. ─────── */
+  --brand-900: #0b2e23; /* fundos escuros de marca, hero, rodapé */
+  --brand-700: #12594a; /* hover/active de brand-500 */
+  --brand-500: #1b8a73; /* cor primária — botões, links, elementos de destaque */
+  --brand-300: #6dc2ae; /* estados sutis, ilustrações, ícones secundários */
+  --brand-100: #dcf2ec; /* fundos claros de destaque (chips, banners informativos) */
+
+  /* ─── Ink — texto e bordas neutras ─────────────────────────────────────────── */
+  --ink-900: #0f1416; /* texto principal */
+  --ink-600: #4a5558; /* texto secundário */
+  --ink-400: #7b8689; /* texto terciário / placeholder */
+  --ink-200: #d8dedf; /* bordas, divisores */
+  --ink-050: #f6f8f8; /* fundo padrão de página/superfície (NumberBall "default") */
+
+  /* ─── Semântico ─────────────────────────────────────────────────────────────── */
+  --success: #1e9e5a; /* acerto, confirmação, dezena sorteada/acertada */
+  --warning: #c77700; /* atenção, prazo próximo, aviso não bloqueante */
+  --danger: #c4342b; /* erro, bloqueio, ação destrutiva */
+  --info: #2563a8; /* informativo neutro */
+
+  /*
+   * ─── Cores de modalidade (tokens de acento) ────────────────────────────────
+   * Usar SOMENTE como preenchimento de badge/pill com texto branco, ou como
+   * borda/indicador — NUNCA como cor de texto em fundo claro (várias não
+   * atingem 4,5:1 de contraste). Os valores abaixo já são os AJUSTADOS para
+   * contraste indicados no doc 09 §9.2 (não os brutos da Caixa).
+   */
+  --lot-megasena: #209869;
+  --lot-lotofacil: #930989;
+  --lot-quina: #260085;
+  --lot-lotomania: #f78100;
+  --lot-duplasena: #a61324;
+  --lot-timemania: #00a832; /* escurecido a partir de #00ff48 p/ contraste */
+  --lot-diadesorte: #b58b3a; /* escurecido p/ contraste */
+  --lot-supersete: #7a9b2e; /* escurecido a partir de #a8cf45 p/ contraste */
+  --lot-maismilionaria: #2b2a78;
+  --lot-loteca: #e4001b;
+  --lot-federal: #133d8d;
+
+  /* ─── Tipografia ─────────────────────────────────────────────────────────────── */
+  --font-display: 'Sora', system-ui, sans-serif; /* títulos — pesos 600/700 */
+  --font-body: 'Inter', system-ui, sans-serif; /* corpo — pesos 400/500/600 */
+  --font-numbers: 'Inter Tight', 'Inter', system-ui, sans-serif; /* dezenas — peso 600 */
+  /* Números SEMPRE com tabular-nums (evita "dança" de largura ao trocar dígitos). */
+  --font-numbers-variant: tabular-nums;
+
+  /* Escala tipográfica (px). Corpo nunca abaixo de --text-base (16px) no mobile — DS1. */
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-base: 16px;
+  --text-md: 18px;
+  --text-lg: 20px;
+  --text-xl: 24px;
+  --text-2xl: 30px;
+  --text-3xl: 36px;
+  --text-4xl: 48px;
+
+  /* ─── Espaçamento — escala base 4px ─────────────────────────────────────────── */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ─── Raio ───────────────────────────────────────────────────────────────────── */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-full: 9999px; /* NumberBall, Badge */
+
+  /*
+   * ─── Sombra ─────────────────────────────────────────────────────────────────
+   * Doc 09 §9.2 pede "sombras discretas — nada de neumorfismo ou glow", sem
+   * fixar valores exatos. Escala conservadora de 2 níveis (DS5 — leveza).
+   */
+  --shadow-sm: 0 1px 2px rgba(15, 20, 22, 0.06);
+  --shadow-md: 0 4px 12px rgba(15, 20, 22, 0.08);
+
+  /* ─── Área de toque mínima (§9.3/§9.7) ────────────────────────────────────── */
+  --touch-target-min: 44px;
+}
