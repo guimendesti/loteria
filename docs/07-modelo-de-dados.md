@@ -72,7 +72,7 @@ model Lottery {
   picksMax       Int                       // 20
   drawsPerContest Int     @default(1)      // Dupla Sena = 2
   extraField     Json?                     // { kind: "CLOVER", min: 1, max: 6, picksMin: 2, picksMax: 6 }
-  drawSchedule   Json                      // { days: [2,4,0], time: "21:00", cutoffMinutes: 60, tz: "America/Sao_Paulo" }
+  drawSchedule   Json                      // v2: { entries: [{ day: 0..6, time: "HH:mm", cutoffMinutes }] } — horário POR DIA (domingo 11h ≠ semana 20h), tz America/Sao_Paulo implícito
   colorToken     String                    // "lottery-megasena"
   isActive       Boolean  @default(true)
   displayOrder   Int

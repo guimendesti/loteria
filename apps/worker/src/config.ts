@@ -43,6 +43,17 @@ const envSchema = z.object({
   SYNC_ENABLED: booleanEnv(true),
   HEALTH_PORT: portEnv(3001),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+  // SY-04 — canal de e-mail (packages/integrations/src/notify/resend.ts). API HTTP pura via
+  // fetch, sem SDK — só precisa da chave, nenhuma dependência nova a instalar.
+  RESEND_API_KEY: z
+    .string({ required_error: 'RESEND_API_KEY é obrigatório (Resend — canal de e-mail, SY-04)' })
+    .min(1, 'RESEND_API_KEY não pode ser vazio'),
+  EMAIL_FROM: z
+    .string({
+      required_error:
+        'EMAIL_FROM é obrigatório (remetente das notificações por e-mail, ex.: "LotoPro <notificacoes@lotopro.com.br>")',
+    })
+    .min(1, 'EMAIL_FROM não pode ser vazio'),
 })
 
 export type WorkerConfig = z.infer<typeof envSchema>

@@ -1,11 +1,11 @@
 /**
- * Bootstrap do worker LotoPro: valida config, instancia as 3 filas/workers (SY-01/03/04),
- * registra o scheduler (SY-01 janela dinâmica), sobe o healthcheck (SY-14) e faz shutdown
- * gracioso em SIGTERM/SIGINT.
+ * Bootstrap do worker LotoPro: valida config, instancia as 4 filas/workers (SY-01/03/04/10),
+ * registra os schedulers (SY-01 janela dinâmica; SY-10 repetível 1x/hora), sobe o
+ * healthcheck (SY-14) e faz shutdown gracioso em SIGTERM/SIGINT.
  */
 import { Worker } from 'bullmq'
 import { PrismaClient } from '@lotopro/db'
-import { CaixaOfficialProvider, ResilientResultProvider } from '@lotopro/integrations'
+import { CaixaOfficialProvider, ResilientResultProvider, ResendEmailSender, NoopPushSender } from '@lotopro/integrations'
 import { loadConfig, ConfigError, type WorkerConfig } from './config'
 import { createRedisConnection, createQueues, closeQueues, QUEUE_NAMES, type Queues } from './queues'
 import { createLogger, type Logger } from './lib/logger'
@@ -13,10 +13,12 @@ import {
   createSyncResultsPrismaAdapter,
   createCheckBetsPrismaAdapter,
   createNotifyPrismaAdapter,
+  createAccumulatedAlertPrismaAdapter,
 } from './lib/prisma-adapters'
 import { createSyncResultsJob } from './jobs/sync-results'
 import { createCheckBetsJob } from './jobs/check-bets'
 import { createNotifyJob } from './jobs/notify'
+import { createAccumulatedAlertJob, registerAccumulatedAlertSchedule } from './jobs/accumulated-alert'
 import { createSyncWindowGate, registerSyncSchedule, createGatedSyncProcessor } from './scheduler'
 import { createHealthServer } from './health'
 import type Redis from 'ioredis'
@@ -53,7 +55,18 @@ async function bootstrap(): Promise<void> {
 
   const runNotify = createNotifyJob({
     prisma: createNotifyPrismaAdapter(prisma),
+    emailSender: new ResendEmailSender({ apiKey: config.RESEND_API_KEY, from: config.EMAIL_FROM }),
+    // SY-04 — push (Web Push/VAPID) fica como design pronto, sem envio real, até a lib
+    // `web-push` ser instalada pelo orquestrador. Ver decisão em
+    // packages/integrations/src/notify/noop.ts.
+    pushSender: new NoopPushSender(),
     logger: createLogger('notify'),
+  })
+
+  const runAccumulatedAlert = createAccumulatedAlertJob({
+    prisma: createAccumulatedAlertPrismaAdapter(prisma),
+    notifyQueue: queues.notify,
+    logger: createLogger('accumulated-alert'),
   })
 
   const gate = createSyncWindowGate({ redis: connection })
@@ -64,6 +77,7 @@ async function bootstrap(): Promise<void> {
     new Worker(QUEUE_NAMES.SYNC_RESULTS, () => gatedSync(), { connection, concurrency: 1 }),
     new Worker(QUEUE_NAMES.CHECK_BETS, (job) => runCheckBets(job.data), { connection, concurrency: 4 }),
     new Worker(QUEUE_NAMES.NOTIFY, (job) => runNotify(job.data), { connection, concurrency: 8 }),
+    new Worker(QUEUE_NAMES.ACCUMULATED_ALERT, (job) => runAccumulatedAlert(job.data), { connection, concurrency: 1 }),
   ]
 
   for (const worker of workers) {
@@ -78,6 +92,11 @@ async function bootstrap(): Promise<void> {
   } else {
     rootLogger.warn('scheduler.disabled', { reason: 'SYNC_ENABLED=false' })
   }
+
+  // SY-10 — repetível 1x/hora, sempre registrado (não depende de SYNC_ENABLED: não chama a
+  // Caixa, só lê o banco local — ver docs/08 SY-10 e jobs/accumulated-alert.ts).
+  await registerAccumulatedAlertSchedule(queues.accumulatedAlert)
+  rootLogger.info('accumulated-alert.scheduler.registered', {})
 
   const healthServer = createHealthServer({
     redis: connection,

@@ -237,10 +237,13 @@ export function createCheckBetsJob(deps: CheckBetsDeps) {
           processedBets += 1
           const prized = outcome.totalPrizeCents > 0n
           if (prized) prizedBets += 1
-          const agg = userAggregates.get(bet.userId) ?? { totalPrizeCents: 0n, betCount: 0, prizedBetCount: 0 }
+          const agg =
+            userAggregates.get(bet.userId) ?? { totalPrizeCents: 0n, betCount: 0, prizedBetCount: 0, bestHits: 0 }
           agg.betCount += 1
           agg.totalPrizeCents += outcome.totalPrizeCents
           if (prized) agg.prizedBetCount += 1
+          const betBestHits = outcome.draws.reduce((max, draw) => Math.max(max, draw.hits), 0)
+          agg.bestHits = Math.max(agg.bestHits, betBestHits)
           userAggregates.set(bet.userId, agg)
         }),
       )
@@ -298,6 +301,16 @@ interface UserAggregate {
   totalPrizeCents: bigint
   betCount: number
   prizedBetCount: number
+  /**
+   * Maior `DrawCheck.hits` entre todos os jogos (e sorteios, na Dupla Sena) do usuário
+   * neste concurso. Alimenta o template `bet.prized`/`bet.checked` de
+   * `@lotopro/integrations` (docs/09 §9.6, texto "Acertou N números..."), que é escrito
+   * para UM jogo — como `notify` aqui é por usuário (pode agregar vários jogos), usamos o
+   * melhor resultado como representante. Simplificação conhecida: com múltiplos jogos
+   * premiados em faixas diferentes, o e-mail cita só o melhor `hits`, não a lista completa
+   * — ver `jobs/notify.ts` `buildEmailContent`.
+   */
+  bestHits: number
 }
 
 function buildNotifyPayload(
@@ -322,6 +335,8 @@ function buildNotifyPayload(
       totalPrizeCents: agg.totalPrizeCents.toString(),
       betCount: agg.betCount,
       prizedBetCount: agg.prizedBetCount,
+      // Ver `UserAggregate.bestHits` — alimenta o template de e-mail (docs/09 §9.6).
+      hits: agg.bestHits,
     },
   }
 }

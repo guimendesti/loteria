@@ -43,8 +43,14 @@ export const HOT_WINDOW_AFTER_MINUTES = 120
 const MINUTES_PER_DAY = 24 * 60
 const MINUTES_PER_WEEK = 7 * MINUTES_PER_DAY
 
-/** "HH:mm" → minutos desde a meia-noite. `null` quando o horário é inválido. */
-function parseTimeOfDay(time: string): number | null {
+/**
+ * "HH:mm" → minutos desde a meia-noite. `null` quando o horário é inválido.
+ *
+ * Exportada (além de usada aqui) porque `jobs/notify.ts` (SY-04, horário de silêncio) e
+ * `jobs/accumulated-alert.ts` (SY-10, rótulo do próximo sorteio) precisam do mesmo parser
+ * de "HH:mm" — evita duplicar a regex em três lugares.
+ */
+export function parseTimeOfDay(time: string): number | null {
   const match = /^(\d{1,2}):(\d{2})$/.exec(time)
   if (match === null) return null
   const hour = Number.parseInt(match[1] ?? '', 10)

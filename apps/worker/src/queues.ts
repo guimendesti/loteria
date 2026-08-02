@@ -1,10 +1,13 @@
 /**
  * Definição tipada das filas BullMQ do worker LotoPro (docs/06 §6.6/§6.7, docs/08 parte E).
  *
- * Três filas:
- *  - `sync-results` (SY-01): varre a Caixa por modalidade e persiste concursos novos.
- *  - `check-bets`   (SY-03): confere apostas ativas contra um concurso recém-persistido.
- *  - `notify`       (SY-04, esqueleto por ora): grava notificação para um usuário.
+ * Quatro filas:
+ *  - `sync-results`      (SY-01): varre a Caixa por modalidade e persiste concursos novos.
+ *  - `check-bets`        (SY-03): confere apostas ativas contra um concurso recém-persistido.
+ *  - `notify`            (SY-04): envia/grava notificação (IN_APP sempre; e-mail/push
+ *    conforme preferência, plano e horário de silêncio — ver `jobs/notify.ts`).
+ *  - `accumulated-alert` (SY-10): varre concursos acumulados 1x/hora e enfileira `notify`
+ *    para quem configurou um limiar — ver `jobs/accumulated-alert.ts`.
  *
  * Cada payload tem um schema Zod exportado — os jobs fazem `schema.parse(job.data)` antes
  * de processar, então um payload corrompido falha cedo e com mensagem clara em vez de
@@ -37,6 +40,7 @@ export const QUEUE_NAMES = {
   SYNC_RESULTS: 'sync-results',
   CHECK_BETS: 'check-bets',
   NOTIFY: 'notify',
+  ACCUMULATED_ALERT: 'accumulated-alert',
 } as const
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES]
@@ -63,18 +67,30 @@ export const checkBetsJobSchema = z.object({
 export type CheckBetsJobData = z.infer<typeof checkBetsJobSchema>
 
 /**
- * Job da fila `notify`. Por ora só alimenta `Notification` (canal IN_APP) — e-mail/push
- * ficam para onda futura (SY-04 completo: canal por preferência, plano e horário de silêncio).
+ * Job da fila `notify` (SY-04). `title`/`body` são o fallback usado pela notificação
+ * IN_APP e por e-mail quando o `type` não tem template dedicado em
+ * `@lotopro/integrations` (`notify/templates.ts`) ou o `payload` não traz os campos que o
+ * template específico exige — ver `apps/worker/src/jobs/notify.ts` `buildEmailContent`.
+ *
+ * `payload` é livre (schema por `type` fica em `notify/types.ts`), mas os campos
+ * `lotterySlug`/`contestNumber`, quando presentes, também alimentam a `dedupeKey` de
+ * idempotência (ver `jobs/notify.ts`).
  */
 export const notifyJobSchema = z.object({
   userId: z.string().min(1),
-  /** ex.: "bet.prized" | "bet.checked" — livre, vira `Notification.type`. */
+  /** ex.: "bet.prized" | "bet.checked" | "contest.accumulated" — livre, vira `Notification.type`. */
   type: z.string().min(1),
   title: z.string().min(1),
   body: z.string().min(1),
   payload: z.record(z.unknown()).optional(),
 })
 export type NotifyJobData = z.infer<typeof notifyJobSchema>
+
+/** Job (repetível, 1x/hora) da fila `accumulated-alert` (SY-10) — ver `jobs/accumulated-alert.ts`. */
+export const accumulatedAlertJobSchema = z.object({
+  triggeredAt: z.string().datetime(),
+})
+export type AccumulatedAlertJobData = z.infer<typeof accumulatedAlertJobSchema>
 
 // ─── Conexão Redis ────────────────────────────────────────────────────────────
 
@@ -98,6 +114,7 @@ export interface Queues {
   syncResults: Queue<SyncResultsJobData>
   checkBets: Queue<CheckBetsJobData>
   notify: Queue<NotifyJobData>
+  accumulatedAlert: Queue<AccumulatedAlertJobData>
 }
 
 export function createQueues(connection: Redis): Queues {
@@ -105,9 +122,15 @@ export function createQueues(connection: Redis): Queues {
     syncResults: new Queue<SyncResultsJobData>(QUEUE_NAMES.SYNC_RESULTS, { connection }),
     checkBets: new Queue<CheckBetsJobData>(QUEUE_NAMES.CHECK_BETS, { connection }),
     notify: new Queue<NotifyJobData>(QUEUE_NAMES.NOTIFY, { connection }),
+    accumulatedAlert: new Queue<AccumulatedAlertJobData>(QUEUE_NAMES.ACCUMULATED_ALERT, { connection }),
   }
 }
 
 export async function closeQueues(queues: Queues): Promise<void> {
-  await Promise.all([queues.syncResults.close(), queues.checkBets.close(), queues.notify.close()])
+  await Promise.all([
+    queues.syncResults.close(),
+    queues.checkBets.close(),
+    queues.notify.close(),
+    queues.accumulatedAlert.close(),
+  ])
 }
