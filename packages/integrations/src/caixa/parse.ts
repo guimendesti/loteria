@@ -329,11 +329,32 @@ function parsePrizes(
 // ─── Entrada principal ───────────────────────────────────────────────────────
 
 /**
+ * Remove caracteres NUL (` `) de todas as strings, recursivamente.
+ * A Caixa preenche campos "vazios" com sequências de NUL; o JSONB do Postgres
+ * rejeita ` ` em strings (erro 22P05), então o payload precisa ser
+ * saneado ANTES de qualquer persistência. Descoberto no smoke de backfill
+ * contra banco real (ORQUESTRACAO.md, Sessão 2).
+ */
+export function stripNulDeep<T>(value: T): T {
+  if (typeof value === 'string') return value.replaceAll(' ', '') as T
+  if (Array.isArray(value)) return value.map((item) => stripNulDeep(item)) as T
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      out[key.replaceAll(' ', '')] = stripNulDeep(val)
+    }
+    return out as T
+  }
+  return value
+}
+
+/**
  * Converte o payload cru da Caixa no `ContestResult` canônico.
  *
  * @throws {CaixaParseError} se o payload não passar no schema ou tiver campo incoerente.
  */
-export function parseCaixaPayload(raw: unknown, slug: LotterySlug): ContestResult {
+export function parseCaixaPayload(rawInput: unknown, slug: LotterySlug): ContestResult {
+  const raw = stripNulDeep(rawInput)
   const validation = caixaPayloadSchema.safeParse(raw)
   if (!validation.success) {
     const issues = validation.error.issues

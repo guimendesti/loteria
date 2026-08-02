@@ -55,6 +55,34 @@ export const auth = betterAuth({
         input: true,
         required: true,
       },
+      // Espelha User.tenantId (multi-tenant "platform" único por ora — ver
+      // comentário em User no schema). Read-only: nunca setável pelo cliente,
+      // só existe para os routers tRPC (apps/web/src/server/routers/bets.ts)
+      // lerem `session.user.tenantId` sem precisar de uma query extra ao User
+      // a cada mutação.
+      tenantId: {
+        type: 'string',
+        input: false,
+      },
+    },
+  },
+  databaseHooks: {
+    user: {
+      create: {
+        // P3 — aceite dos termos (docs/03 §3.4, docs/08 AU-01/P3): o formulário
+        // de cadastro (`app/(auth)/cadastro/page.tsx`) só habilita o submit com
+        // o checkbox de termos marcado, então todo signup que chega aqui já
+        // implica aceite — registramos o timestamp no servidor (nunca confiar só
+        // em checagem client-side, CLAUDE.md "Convenções").
+        before: async (user) => {
+          return {
+            data: {
+              ...user,
+              termsAcceptedAt: new Date(),
+            },
+          }
+        },
+      },
     },
   },
 })

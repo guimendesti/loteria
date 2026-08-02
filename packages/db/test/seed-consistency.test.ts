@@ -192,4 +192,35 @@ describe('seed-data vs @lotopro/core — consistência', () => {
       expect(normalizeTierTuples(seedTiersForLottery)).toEqual(normalizeTierTuples(core.prizeTiers))
     }
   })
+
+  /**
+   * `drawSchedule` é Json no banco (sem coluna tipada), então nada além deste teste impede o
+   * seed de divergir do core. Como o corte de apostas é "recurso de valor real" (doc 01 §1.2,
+   * implicação 1), a agenda precisa ser a MESMA nos dois lados — inclusive depois da migração
+   * de jul/2026 (sábado → domingo 11h, corte 780 min).
+   */
+  it('(e) agenda de sorteios (drawSchedule.entries) é idêntica à do core', () => {
+    for (const seedLottery of lotteries) {
+      const core = getLotteryConfig(seedLottery.slug)
+      expect(seedLottery.drawSchedule.entries, `modalidade "${seedLottery.slug}"`).toEqual(
+        core.drawSchedule.entries,
+      )
+      expect(seedLottery.drawSchedule.tz, `modalidade "${seedLottery.slug}"`).toBe('America/Sao_Paulo')
+    }
+  })
+
+  it('(f) o sorteio de domingo é às 11h com corte às 22h de sábado (780 min)', () => {
+    const sundayEntries = lotteries.flatMap((lottery) =>
+      lottery.drawSchedule.entries
+        .filter((entry) => entry.day === 0)
+        .map((entry) => ({ slug: lottery.slug, ...entry })),
+    )
+    expect(sundayEntries.length, 'nenhuma modalidade com sorteio de domingo no seed').toBeGreaterThan(0)
+    for (const entry of sundayEntries) {
+      expect({ time: entry.time, cutoffMinutes: entry.cutoffMinutes }, entry.slug).toEqual({
+        time: '11:00',
+        cutoffMinutes: 780,
+      })
+    }
+  })
 })

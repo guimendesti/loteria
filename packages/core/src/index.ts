@@ -8,3 +8,5 @@ export * from './lottery/validate'
 export * from './checking/check'
 
 export * from './pool/payout'
+
+export * from './entitlements'

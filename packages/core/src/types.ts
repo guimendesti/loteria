@@ -32,13 +32,22 @@ export type ExtraFieldConfig =
   | { kind: 'MONTH' }                                                                 // Dia de Sorte (1–12)
   | { kind: 'TEAM' }                                                                  // Timemania
 
-export interface DrawSchedule {
-  /** Dias da semana com sorteio: 0=domingo … 6=sábado */
-  days: number[]
+/**
+ * v2 — horário POR DIA: desde jul/2026 sete modalidades sorteiam DOMINGO às 11h
+ * (corte 22h de sábado = 780 min antes), enquanto os sorteios de semana são às
+ * 20h/21h com corte de 60 min. Um `time` único não representa isso.
+ */
+export interface DrawScheduleEntry {
+  /** Dia da semana: 0=domingo … 6=sábado */
+  day: number
   /** Horário do sorteio, HH:mm, timezone America/Sao_Paulo */
   time: string
   /** Minutos ANTES do sorteio em que as apostas encerram */
   cutoffMinutes: number
+}
+
+export interface DrawSchedule {
+  entries: DrawScheduleEntry[]
 }
 
 export interface PriceTierData {
@@ -145,14 +154,32 @@ export interface CheckOutcome {
   totalPrizeCents: bigint
 }
 
+/**
+ * v2 — decomposição multi-faixa: uma aposta MÚLTIPLA premiada contém várias
+ * apostas simples premiadas em faixas distintas (Mega de 8 dezenas com 6
+ * acertos = 1 sena + 12 quinas + 15 quadras). `tierCounts` carrega essa
+ * decomposição; `prizeTier`/`prizeCents` seguem existindo como agregado
+ * (faixa principal e prêmio total do sorteio).
+ */
+export interface TierCount {
+  tier: number
+  /** Quantas apostas simples embutidas caíram nesta faixa */
+  count: number
+  /** Prêmio desta faixa: count × valor unitário da faixa no concurso */
+  prizeCents: bigint
+}
+
 export interface DrawCheck {
   drawIndex: number          // 1-based
   hits: number
   hitNumbers: number[]
   extraHits: number | null
-  /** Faixa premiada (tier) ou null se não premiado */
+  /** Faixa principal (maior prêmio) ou null se não premiado */
   prizeTier: number | null
+  /** Prêmio total do sorteio (soma de tierCounts) */
   prizeCents: bigint
+  /** Decomposição por faixa — vazio quando não premiado */
+  tierCounts: TierCount[]
 }
 
 // ─── Bolão ───────────────────────────────────────────────────────────────────

@@ -9,7 +9,8 @@
  *   2. chama `check()` do core com a `LotteryConfig` da modalidade e o `ContestResult`
  *      reconstruído do concurso;
  *   3. grava um `BetCheck` por sorteio do concurso (`upsert` na unique `(betId, contestId,
- *      drawIndex)` — idempotente: reprocessar o mesmo concurso atualiza em vez de duplicar).
+ *      drawIndex)` — idempotente: reprocessar o mesmo concurso atualiza em vez de duplicar),
+ *      incluindo a decomposição multi-faixa v2 (`tierCounts`, Json — ver `BetCheckTierCountJson`).
  *
  * Ao final: marca `Contest.settledAt` e enfileira UM job `notify` por usuário que teve pelo
  * menos uma aposta conferida neste concurso (premiado ou não — o payload carrega os dois casos,
@@ -128,12 +129,31 @@ export interface CheckBetsPrisma {
   }
 }
 
+/**
+ * Espelho JSON de `TierCount` (@lotopro/core) na coluna `BetCheck.tierCounts` (Json?).
+ *
+ * `prizeCents` vira STRING: JSON não tem inteiro de precisão arbitrária e `JSON.stringify`
+ * lança em `bigint`. Mesma convenção já usada no payload de notificação (`totalPrizeCents`)
+ * e na regra "dinheiro em centavos inteiros" (CLAUDE.md §5) — quem lê reconstrói com
+ * `BigInt(value)`, sem passar por `number` em momento nenhum.
+ *
+ * `type` (não `interface`) de propósito: só um alias de tipo ganha index signature
+ * implícita, e sem ela o objeto não é atribuível a `Prisma.InputJsonValue`.
+ */
+export type BetCheckTierCountJson = {
+  tier: number
+  count: number
+  prizeCents: string
+}
+
 interface BetCheckWriteData {
   hits: number
   hitNumbers: number[]
   extraHits: number | null
   prizeTier: number | null
   prizeCents: bigint
+  /** v2 — decomposição multi-faixa. Vazio quando a aposta não foi premiada no sorteio. */
+  tierCounts: BetCheckTierCountJson[]
 }
 
 export interface CheckBetsNotifyQueue {
@@ -259,7 +279,13 @@ async function upsertBetCheck(
     hitNumbers: draw.hitNumbers,
     extraHits: draw.extraHits,
     prizeTier: draw.prizeTier,
+    // Agregado do sorteio — segue sendo Σ das faixas, e é o que alimenta o notify.
     prizeCents: draw.prizeCents,
+    tierCounts: draw.tierCounts.map((entry) => ({
+      tier: entry.tier,
+      count: entry.count,
+      prizeCents: entry.prizeCents.toString(),
+    })),
   }
   await prisma.betCheck.upsert({
     where: { betId_contestId_drawIndex: { betId, contestId, drawIndex: draw.drawIndex } },

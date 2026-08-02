@@ -3,6 +3,7 @@ import { getLotteryConfig } from '@lotopro/core'
 import {
   createCheckBetsJob,
   BATCH_SIZE,
+  type BetCheckTierCountJson,
   type CheckBetsPrisma,
   type CheckBetsPrismaBet,
   type CheckBetsPrismaContest,
@@ -39,6 +40,7 @@ function createFakeDb() {
       extraHits: number | null
       prizeTier: number | null
       prizeCents: bigint
+      tierCounts: BetCheckTierCountJson[]
     }
   >()
   const settledContestIds = new Set<string>()
@@ -161,16 +163,20 @@ describe('check-bets (SY-03) — conferência em lote', () => {
       hits: 6,
       prizeTier: 1,
       prizeCents: 1_000_000n,
+      // Aposta simples: uma entrada, count 1, bigint serializado como string.
+      tierCounts: [{ tier: 1, count: 1, prizeCents: '1000000' }],
     })
     expect(db.betChecks.get('bet-0002:contest-2900:1')).toMatchObject({
       hits: 5,
       prizeTier: 2,
       prizeCents: 5_000n,
+      tierCounts: [{ tier: 2, count: 1, prizeCents: '5000' }],
     })
     expect(db.betChecks.get('bet-0003:contest-2900:1')).toMatchObject({
       hits: 0,
       prizeTier: null,
       prizeCents: 0n,
+      tierCounts: [],
     })
 
     expect(db.settledContestIds.has(CONTEST_ID)).toBe(true)
@@ -224,5 +230,38 @@ describe('check-bets (SY-03) — conferência em lote', () => {
     expect([...db.betChecks.keys()].sort()).toEqual([...snapshotAfterFirst.keys()].sort())
     // valores continuam corretos após a segunda passada (update, não duplicação)
     expect(db.betChecks.get('bet-0001:contest-2900:1')).toMatchObject({ hits: 6, prizeCents: 1_000_000n })
+  })
+
+  it('aposta múltipla: persiste a decomposição v2 e agrega o prêmio total no notify', async () => {
+    const db = createFakeDb()
+    seedMegasenaContest(db)
+    // Volante de 8 dezenas com 6 acertos: C(8,6) = 28 apostas simples embutidas
+    // → 1 sena + 12 quinas + 15 quadras (packages/core/src/checking/check.ts).
+    db.bets.push(betRow('bet-0001', 'u1', [1, 2, 3, 4, 5, 6, 7, 8]))
+
+    const notifyQueue = createFakeNotifyQueue()
+    const checkBets = createCheckBetsJob({ prisma: db.prisma, notifyQueue })
+    const result = await checkBets({ lotterySlug: 'megasena', contestNumber: CONTEST_NUMBER })
+
+    expect(result).toEqual({ processedBets: 1, prizedBets: 1, notifiedUsers: 1 })
+
+    const saved = db.betChecks.get('bet-0001:contest-2900:1')
+    expect(saved?.tierCounts).toEqual([
+      { tier: 1, count: 1, prizeCents: '1000000' }, // 1 × R$ 10.000,00
+      { tier: 2, count: 12, prizeCents: '60000' }, // 12 × R$ 50,00
+      { tier: 3, count: 15, prizeCents: '1500' }, // 15 × R$ 1,00
+    ])
+    // Agregado = Σ das faixas (invariante do contrato v2).
+    expect(saved?.prizeCents).toBe(1_061_500n)
+    expect(saved).toMatchObject({ hits: 6, prizeTier: 1 })
+
+    // `tierCounts` é Json: precisa sobreviver a JSON.stringify (nada de bigint).
+    expect(() => JSON.stringify(saved?.tierCounts)).not.toThrow()
+
+    expect(notifyQueue.calls[0]).toMatchObject({
+      userId: 'u1',
+      type: 'bet.prized',
+      payload: { totalPrizeCents: '1061500', betCount: 1, prizedBetCount: 1 },
+    })
   })
 })

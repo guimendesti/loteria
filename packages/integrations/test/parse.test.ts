@@ -147,9 +147,13 @@ describe('parseCaixaPayload — Mega-Sena 3038', () => {
     ])
   })
 
-  it('não inventa campo extra e preserva o payload bruto', () => {
+  it('não inventa campo extra e preserva o payload bruto (saneado de NUL)', () => {
     expect(result.extraResult).toBeNull()
-    expect(result.raw).toBe(raw)
+    // `raw` é uma cópia com NUL removidos (JSONB do Postgres rejeita NUL —
+    // erro 22P05, visto no smoke contra banco real). Semanticamente idêntico:
+    expect(result.raw).toEqual(JSON.parse(JSON.stringify(raw).replaceAll('\\u0000', '')))
+    // invariante: nenhum NUL sobrevive à borda
+    expect(JSON.stringify(result.raw)).not.toContain('\\u0000')
   })
 })
 

@@ -18,6 +18,9 @@ export type LotteryFormatSlug = LotteryFormat
 
 // Superset de `DrawSchedule` (@lotopro/core) — inclui `tz`, conforme o exemplo de JSON em
 // docs/07-modelo-de-dados.md §7.3, campo `Lottery.drawSchedule`.
+// v2: `DrawSchedule` é `{ entries: [{day, time, cutoffMinutes}] }` — horário POR DIA, porque
+// desde jul/2026 os sorteios migrados para domingo são às 11h (corte 22h de sábado) enquanto
+// os de semana continuam às 20h com corte de 60 min.
 export interface DrawScheduleConfig extends DrawSchedule {
   tz: string
 }

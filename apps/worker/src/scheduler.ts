@@ -1,11 +1,10 @@
 /**
  * SY-01 — janelas dinâmicas de sincronização (docs/06 §6.6):
  *
- *   | Janela                          | Frequência   |
- *   |----------------------------------|--------------|
- *   | Dias de sorteio, 20:50–23:00     | a cada 5 min |
- *   | Domingos, 10:40–13:00            | a cada 5 min |
- *   | Demais horários                  | a cada 1 hora|
+ *   | Janela                                     | Frequência   |
+ *   |--------------------------------------------|--------------|
+ *   | Sorteio da modalidade − 10 min … + 2 h     | a cada 5 min |
+ *   | Demais horários                            | a cada 1 hora|
  *
  * O job repetível do BullMQ dispara a cada 5 min SEMPRE (timer burro, registrado uma vez
  * em `registerSyncSchedule`). É o HANDLER (`createGatedSyncProcessor`) que decide, a cada
@@ -13,32 +12,64 @@
  * quente entram sempre; as demais só entram se fizer >= 1h desde a última tentativa
  * (guardada por modalidade no Redis). Isso implementa o rate limit do doc 06 §6.6
  * ("1 req/modalidade/min na janela de sorteio; 1/h fora dela") sem exigir N crons diferentes.
+ *
+ * ── v2: a janela sai do DADO, não de constantes ──────────────────────────────────────────
+ *
+ * A v1 tinha duas faixas fixas de relógio (20:50–23:00 em dia de sorteio + 10:40–13:00 aos
+ * domingos para todo mundo). Com `DrawSchedule.entries` trazendo `{day, time}` POR DIA — e
+ * com sete modalidades sorteando domingo às 11h e no meio da semana às 20h —, a janela passa
+ * a ser DERIVADA de cada entrada da agenda: do horário do sorteio menos 10 min até 2h depois.
+ * Modalidade continua sendo dado (CLAUDE.md §6): nenhum horário fica hardcoded aqui.
  */
 import type { Queue } from 'bullmq'
-import { ALL_LOTTERIES, type DrawSchedule, type LotteryConfig, type LotterySlug } from '@lotopro/core'
+import {
+  ALL_LOTTERIES,
+  type DrawSchedule,
+  type DrawScheduleEntry,
+  type LotteryConfig,
+  type LotterySlug,
+} from '@lotopro/core'
 import type { SyncResultsJobData } from './queues'
 import { getSaoPauloParts } from './lib/timezone'
 import type { Logger } from './lib/logger'
 
 // ─── Janela quente (função pura, testada com datas fixas) ────────────────────
 
-interface ClockWindow {
-  startMinutes: number
-  endMinutes: number
+/** Abre 10 min ANTES do sorteio (a Caixa às vezes publica adiantado). */
+export const HOT_WINDOW_BEFORE_MINUTES = 10
+/** Fecha 2h DEPOIS: cobre atraso de apuração e republicação do rateio. */
+export const HOT_WINDOW_AFTER_MINUTES = 120
+
+const MINUTES_PER_DAY = 24 * 60
+const MINUTES_PER_WEEK = 7 * MINUTES_PER_DAY
+
+/** "HH:mm" → minutos desde a meia-noite. `null` quando o horário é inválido. */
+function parseTimeOfDay(time: string): number | null {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(time)
+  if (match === null) return null
+  const hour = Number.parseInt(match[1] ?? '', 10)
+  const minute = Number.parseInt(match[2] ?? '', 10)
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null
+  return hour * 60 + minute
 }
 
-function clockWindow(startHour: number, startMinute: number, endHour: number, endMinute: number): ClockWindow {
-  return { startMinutes: startHour * 60 + startMinute, endMinutes: endHour * 60 + endMinute }
-}
+/**
+ * `true` se o instante (expresso em "minutos desde a meia-noite de domingo", horário local)
+ * cai na janela quente desta entrada da agenda.
+ *
+ * A conta é feita em minutos-da-semana e fechada em módulo 7 dias, o que resolve de graça os
+ * dois casos de borda: janela que atravessa a meia-noite (sorteio às 23:30 + 2h) e janela que
+ * atravessa a virada da semana (sorteio no domingo 00:05 → começa no sábado 23:55).
+ */
+function entryCoversWeekMinute(entry: DrawScheduleEntry, weekMinute: number): boolean {
+  const drawMinute = parseTimeOfDay(entry.time)
+  if (drawMinute === null) return false
 
-/** 20:50–23:00 — cobre o horário de sorteio de todas as modalidades (19:00–20:00 + apuração). */
-const EVENING_DRAW_WINDOW = clockWindow(20, 50, 23, 0)
-/** 10:40–13:00 aos domingos — apuração de resultados que fecham no fim de semana (ex.: Loteca). */
-const SUNDAY_WINDOW = clockWindow(10, 40, 13, 0)
-const SUNDAY = 0
-
-function withinClock(minutesOfDay: number, window: ClockWindow): boolean {
-  return minutesOfDay >= window.startMinutes && minutesOfDay <= window.endMinutes
+  const start = entry.day * MINUTES_PER_DAY + drawMinute - HOT_WINDOW_BEFORE_MINUTES
+  const length = HOT_WINDOW_BEFORE_MINUTES + HOT_WINDOW_AFTER_MINUTES
+  const elapsed = (((weekMinute - start) % MINUTES_PER_WEEK) + MINUTES_PER_WEEK) % MINUTES_PER_WEEK
+  return elapsed <= length // bordas inclusivas nas duas pontas
 }
 
 /**
@@ -47,11 +78,8 @@ function withinClock(minutesOfDay: number, window: ClockWindow): boolean {
  */
 export function isWithinHotWindow(date: Date, schedule: DrawSchedule): boolean {
   const { weekday, hour, minute } = getSaoPauloParts(date)
-  const minutesOfDay = hour * 60 + minute
-
-  if (schedule.days.includes(weekday) && withinClock(minutesOfDay, EVENING_DRAW_WINDOW)) return true
-  if (weekday === SUNDAY && withinClock(minutesOfDay, SUNDAY_WINDOW)) return true
-  return false
+  const weekMinute = weekday * MINUTES_PER_DAY + hour * 60 + minute
+  return schedule.entries.some((entry) => entryCoversWeekMinute(entry, weekMinute))
 }
 
 // ─── Seleção de modalidades due neste tick ────────────────────────────────────

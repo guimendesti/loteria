@@ -18,12 +18,37 @@
  *    prêmios (1º ao 5º) fica para `contest_prizes`, não para `prize_tiers` (por isso não há seed
  *    de prizeTiers para `federal` — também fora do escopo desta tarefa).
  *
- * Dias da semana em `drawSchedule.days`: 0=domingo … 6=sábado (mesma convenção de
- * packages/core/src/types.ts `DrawSchedule`). Horários e `cutoffMinutes` refletem a agenda
- * pública recente da Caixa e devem ser conferidos contra `packages/integrations/caixa` antes do
- * backfill de concursos.
+ * ⚠️ `drawSchedule` — contrato v2: horário POR DIA (`entries[]`, não mais `days`+`time` único).
+ * Dias da semana em `entries[].day`: 0=domingo … 6=sábado (mesma convenção de
+ * packages/core/src/types.ts `DrawScheduleEntry`). `cutoffMinutes` é sempre contado a partir
+ * do horário do SORTEIO daquele dia.
+ *
+ * Em julho/2026 os sorteios de SÁBADO migraram para DOMINGO às 11h, com apostas simples
+ * encerrando às 22h de sábado — 13h antes = `cutoffMinutes: 780` (doc 01 §1.2, nota de rodapé).
+ * A agenda abaixo espelha 1:1 `packages/core/src/lottery/configs.ts`, que é a fonte de verdade
+ * (garantido pelo teste `test/seed-consistency.test.ts`, caso "e").
  */
-import type { LotterySeed } from './types'
+import type { DrawScheduleConfig, LotterySeed } from './types'
+
+const TZ = 'America/Sao_Paulo'
+
+/** Entradas de dias de semana com o mesmo horário e corte. */
+function onDays(days: readonly number[], time = '20:00', cutoffMinutes = 60): DrawScheduleConfig['entries'] {
+  return days.map((day) => ({ day, time, cutoffMinutes }))
+}
+
+/**
+ * Sorteio migrado do sábado: domingo 11h, corte às 22h de sábado (780 min antes).
+ * Função, e não constante compartilhada: cada modalidade leva a sua própria cópia do objeto
+ * (este array é serializado para Json no seed — nenhuma referência cruzada entre linhas).
+ */
+function sundayDraw(): DrawScheduleConfig['entries'][number] {
+  return { day: 0, time: '11:00', cutoffMinutes: 780 }
+}
+
+function schedule(entries: DrawScheduleConfig['entries']): DrawScheduleConfig {
+  return { entries, tz: TZ }
+}
 
 export const lotteries: LotterySeed[] = [
   {
@@ -37,7 +62,8 @@ export const lotteries: LotterySeed[] = [
     picksMax: 20,
     drawsPerContest: 1,
     extraField: null,
-    drawSchedule: { days: [3, 6], time: '20:00', cutoffMinutes: 60, tz: 'America/Sao_Paulo' }, // quarta e sábado
+    // ter, qui + dom 11h — o sorteio de sábado migrou (doc 01 §1.2, "Ter, Qui, Sáb/Dom*")
+    drawSchedule: schedule([...onDays([2, 4]), sundayDraw()]),
     colorToken: '--lot-megasena',
   },
   {
@@ -51,7 +77,8 @@ export const lotteries: LotterySeed[] = [
     picksMax: 20,
     drawsPerContest: 1,
     extraField: null,
-    drawSchedule: { days: [1, 2, 3, 4, 5, 6], time: '20:00', cutoffMinutes: 60, tz: 'America/Sao_Paulo' }, // segunda a sábado
+    // "Seg a Sáb" → seg–sex + dom 11h // TODO confirmar migração dom.
+    drawSchedule: schedule([...onDays([1, 2, 3, 4, 5]), sundayDraw()]),
     colorToken: '--lot-lotofacil',
   },
   {
@@ -65,7 +92,8 @@ export const lotteries: LotterySeed[] = [
     picksMax: 15,
     drawsPerContest: 1,
     extraField: null,
-    drawSchedule: { days: [1, 2, 3, 4, 5, 6], time: '20:00', cutoffMinutes: 60, tz: 'America/Sao_Paulo' }, // segunda a sábado
+    // "Seg a Sáb" → seg–sex + dom 11h // TODO confirmar migração dom.
+    drawSchedule: schedule([...onDays([1, 2, 3, 4, 5]), sundayDraw()]),
     colorToken: '--lot-quina',
   },
   {
@@ -81,7 +109,8 @@ export const lotteries: LotterySeed[] = [
     picksMax: 50,
     drawsPerContest: 1,
     extraField: null,
-    drawSchedule: { days: [1, 3, 5], time: '20:00', cutoffMinutes: 60, tz: 'America/Sao_Paulo' }, // segunda, quarta e sexta
+    // segunda, quarta e sexta — sem sorteio sabatino, nada a migrar
+    drawSchedule: schedule(onDays([1, 3, 5])),
     colorToken: '--lot-lotomania',
   },
   {
@@ -95,7 +124,8 @@ export const lotteries: LotterySeed[] = [
     picksMax: 15,
     drawsPerContest: 2, // dois sorteios por concurso — ver PrizeTier.drawIndex / BetCheck.drawIndex
     extraField: null,
-    drawSchedule: { days: [2, 4, 6], time: '20:00', cutoffMinutes: 60, tz: 'America/Sao_Paulo' }, // terça, quinta e sábado
+    // ter, qui + dom 11h — o sábado migrou // TODO confirmar migração dom.
+    drawSchedule: schedule([...onDays([2, 4]), sundayDraw()]),
     colorToken: '--lot-duplasena',
   },
   {
@@ -109,7 +139,8 @@ export const lotteries: LotterySeed[] = [
     picksMax: 10,
     drawsPerContest: 1,
     extraField: { kind: 'TEAM' }, // time do coração
-    drawSchedule: { days: [2, 4, 6], time: '20:00', cutoffMinutes: 60, tz: 'America/Sao_Paulo' }, // terça, quinta e sábado
+    // ter, qui + dom 11h — o sábado migrou // TODO confirmar migração dom.
+    drawSchedule: schedule([...onDays([2, 4]), sundayDraw()]),
     colorToken: '--lot-timemania',
   },
   {
@@ -123,7 +154,8 @@ export const lotteries: LotterySeed[] = [
     picksMax: 15,
     drawsPerContest: 1,
     extraField: { kind: 'MONTH' }, // mês da sorte (1–12)
-    drawSchedule: { days: [2, 4, 6], time: '20:00', cutoffMinutes: 60, tz: 'America/Sao_Paulo' }, // terça, quinta e sábado
+    // ter, qui + dom 11h — o sábado migrou // TODO confirmar migração dom.
+    drawSchedule: schedule([...onDays([2, 4]), sundayDraw()]),
     colorToken: '--lot-diadesorte',
   },
   {
@@ -141,7 +173,8 @@ export const lotteries: LotterySeed[] = [
     picksMax: 21,
     drawsPerContest: 1,
     extraField: null,
-    drawSchedule: { days: [1, 3, 5], time: '15:00', cutoffMinutes: 60, tz: 'America/Sao_Paulo' }, // segunda, quarta e sexta — sorteio vespertino
+    // segunda, quarta e sexta — sorteio vespertino (15h), sem sábado a migrar
+    drawSchedule: schedule(onDays([1, 3, 5], '15:00')),
     colorToken: '--lot-supersete',
   },
   {
@@ -155,7 +188,8 @@ export const lotteries: LotterySeed[] = [
     picksMax: 12,
     drawsPerContest: 1,
     extraField: { kind: 'CLOVER', min: 1, max: 6, picksMin: 2, picksMax: 6 },
-    drawSchedule: { days: [6], time: '20:00', cutoffMinutes: 60, tz: 'America/Sao_Paulo' }, // sábado
+    // único sorteio da semana, migrado de sábado para domingo 11h // TODO confirmar migração dom.
+    drawSchedule: schedule([sundayDraw()]),
     colorToken: '--lot-maismilionaria',
   },
   {
@@ -169,7 +203,9 @@ export const lotteries: LotterySeed[] = [
     picksMax: 42, // 14 jogos × até 3 palpites (duplos/triplos) por jogo
     drawsPerContest: 1,
     extraField: null,
-    drawSchedule: { days: [6], time: '19:00', cutoffMinutes: 120, tz: 'America/Sao_Paulo' }, // encerra sábado, resultado apurado ao longo do fim de semana
+    // encerrava no sábado e era apurada ao longo do fim de semana; modelada como domingo 11h
+    // junto com as demais // TODO confirmar migração dom.
+    drawSchedule: schedule([sundayDraw()]),
     colorToken: '--lot-loteca',
   },
   {
@@ -183,7 +219,8 @@ export const lotteries: LotterySeed[] = [
     picksMax: 1,
     drawsPerContest: 1,
     extraField: null,
-    drawSchedule: { days: [3, 6], time: '19:00', cutoffMinutes: 60, tz: 'America/Sao_Paulo' }, // quarta e sábado
+    // quarta e sábado às 19h — a Federal NÃO migrou (bilhete numerado, não é volante)
+    drawSchedule: schedule(onDays([3, 6], '19:00')),
     colorToken: '--lot-federal',
   },
 ]

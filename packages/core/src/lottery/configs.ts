@@ -35,10 +35,20 @@
  *    Time do Coração são prêmios próprios, acumuláveis com a faixa numérica). Modeladas com
  *    `hits: 0, extraHits: 1`; `check.ts` ignora `hits` nessas faixas.
  *  • Dupla Sena: as 4 faixas se repetem nos dois sorteios — mesmo `tier`, `drawIndex` 1 e 2.
+ *
+ * AGENDA (`drawSchedule`) — contrato v2, horário POR DIA
+ *  • Em julho/2026 a Caixa migrou os sorteios que aconteciam aos SÁBADOS para DOMINGO às 11h,
+ *    no Espaço da Sorte (SP), mantendo o encerramento das apostas simples às 22h de SÁBADO
+ *    (doc 01 §1.2, nota de rodapé). Como `cutoffMinutes` é sempre contado a partir do horário
+ *    do sorteio, o corte de sábado 22h vira `780` minutos antes do sorteio de domingo 11h.
+ *  • Sorteios de segunda a sexta continuam às 20h (Super Sete às 15h) com corte de 60 min.
+ *  • Um `time` único por modalidade não representava isso — daí `entries[]` com `{day, time,
+ *    cutoffMinutes}` por dia.
  */
 
 import type {
   DrawSchedule,
+  DrawScheduleEntry,
   ExtraFieldConfig,
   LotteryConfig,
   LotterySlug,
@@ -49,8 +59,36 @@ import { combinations } from './combinatorics'
 
 // ─── Helpers de construção ───────────────────────────────────────────────────
 
-function schedule(days: number[], time: string, cutoffMinutes = 60): DrawSchedule {
-  return { days, time, cutoffMinutes }
+/** 0 = domingo … 6 = sábado (convenção de `DrawScheduleEntry.day`). */
+const SUNDAY = 0
+
+/** Sorteios de semana: 20h, apostas encerram 1h antes. */
+const WEEKDAY_TIME = '20:00'
+const WEEKDAY_CUTOFF_MINUTES = 60
+
+/**
+ * Sorteio de domingo às 11h (migração de jul/2026). Corte às 22h do SÁBADO anterior:
+ * 11:00 − 13h = 22:00 do dia anterior → 13 × 60 = 780 minutos antes do sorteio.
+ */
+const SUNDAY_TIME = '11:00'
+const SUNDAY_CUTOFF_MINUTES = 13 * 60
+
+/** Entradas de dias de semana, todas com o mesmo horário e corte. */
+function onDays(
+  days: readonly number[],
+  time: string = WEEKDAY_TIME,
+  cutoffMinutes: number = WEEKDAY_CUTOFF_MINUTES,
+): DrawScheduleEntry[] {
+  return days.map((day) => ({ day, time, cutoffMinutes }))
+}
+
+/** O sorteio que era de sábado, hoje domingo 11h com corte às 22h de sábado. */
+function sundayDraw(): DrawScheduleEntry {
+  return { day: SUNDAY, time: SUNDAY_TIME, cutoffMinutes: SUNDAY_CUTOFF_MINUTES }
+}
+
+function schedule(entries: DrawScheduleEntry[]): DrawSchedule {
+  return { entries }
 }
 
 /** Tabela completa de PICK_N: preçoSimples × C(picks, picksMin). */
@@ -129,8 +167,9 @@ const megasena: LotteryConfig = {
   picksMax: 20,
   drawsPerContest: 1,
   extraField: null,
-  // doc 01 §1.2: "Ter, Qui, Sáb/Dom*" — o sorteio de sábado migrou para domingo (jul/2026).
-  drawSchedule: schedule([0, 2, 4], '20:00', 60),
+  // doc 01 §1.2: "Ter, Qui, Sáb/Dom*" — o sorteio de sábado migrou para domingo (jul/2026),
+  // 11h, com apostas encerrando às 22h de sábado. Migração CONFIRMADA no doc para a Mega.
+  drawSchedule: schedule([...onDays([2, 4]), sundayDraw()]),
   priceTiers: pickNPriceTiers(6, 20, 600n),
   prizeTiers: hitTiers([
     [6, 'Sena'],
@@ -149,7 +188,8 @@ const lotofacil: LotteryConfig = {
   picksMax: 20,
   drawsPerContest: 1,
   extraField: null,
-  drawSchedule: schedule([1, 2, 3, 4, 5, 6], '20:00', 60),
+  // doc 01 §1.2: "Seg a Sáb" — sábado → domingo 11h. // TODO confirmar migração dom.
+  drawSchedule: schedule([...onDays([1, 2, 3, 4, 5]), sundayDraw()]),
   priceTiers: pickNPriceTiers(15, 20, 350n),
   prizeTiers: hitTiers([
     [15, '15 acertos'],
@@ -170,7 +210,8 @@ const quina: LotteryConfig = {
   picksMax: 15,
   drawsPerContest: 1,
   extraField: null,
-  drawSchedule: schedule([1, 2, 3, 4, 5, 6], '20:00', 60),
+  // doc 01 §1.2: "Seg a Sáb" — sábado → domingo 11h. // TODO confirmar migração dom.
+  drawSchedule: schedule([...onDays([1, 2, 3, 4, 5]), sundayDraw()]),
   priceTiers: pickNPriceTiers(5, 15, 300n),
   prizeTiers: hitTiers([
     [5, 'Quina'],
@@ -191,7 +232,8 @@ const lotomania: LotteryConfig = {
   picksMax: 50,
   drawsPerContest: 1,
   extraField: null,
-  drawSchedule: schedule([1, 3, 5], '20:00', 60),
+  // doc 01 §1.2: "3x/semana" — seg/qua/sex. Sem sorteio sabatino: nada a migrar.
+  drawSchedule: schedule(onDays([1, 3, 5])),
   priceTiers: pickNPriceTiers(50, 50, 300n),
   // Única modalidade que premia ZERO acertos.
   prizeTiers: hitTiers([
@@ -215,7 +257,11 @@ const duplasena: LotteryConfig = {
   picksMax: 15,
   drawsPerContest: 2, // dois sorteios por concurso
   extraField: null,
-  drawSchedule: schedule([1, 3, 5], '20:00', 60),
+  // doc 01 §1.2: "3x/semana" — a grade da Caixa é ter/qui/sáb (mesma do seed em
+  // packages/db/src/seed-data/lotteries.ts); o sábado migrou para domingo 11h.
+  // (A v1 deste arquivo trazia seg/qua/sex, divergindo do seed — corrigido aqui.)
+  // TODO confirmar migração dom.
+  drawSchedule: schedule([...onDays([2, 4]), sundayDraw()]),
   priceTiers: pickNPriceTiers(6, 15, 300n),
   prizeTiers: [
     ...hitTiers(
@@ -249,7 +295,9 @@ const timemania: LotteryConfig = {
   picksMax: 10, // 10 dezenas fixas — não há aposta múltipla
   drawsPerContest: 1,
   extraField: TEAM_FIELD,
-  drawSchedule: schedule([2, 4, 6], '20:00', 60),
+  // doc 01 §1.2: "3x/semana" — ter/qui/sáb; o sábado migrou para domingo 11h.
+  // TODO confirmar migração dom.
+  drawSchedule: schedule([...onDays([2, 4]), sundayDraw()]),
   priceTiers: pickNPriceTiers(10, 10, 350n),
   prizeTiers: [
     ...hitTiers([
@@ -273,7 +321,9 @@ const diadesorte: LotteryConfig = {
   picksMax: 15,
   drawsPerContest: 1,
   extraField: MONTH_FIELD,
-  drawSchedule: schedule([2, 4, 6], '20:00', 60),
+  // doc 01 §1.2: "3x/semana" — ter/qui/sáb; o sábado migrou para domingo 11h.
+  // TODO confirmar migração dom.
+  drawSchedule: schedule([...onDays([2, 4]), sundayDraw()]),
   priceTiers: pickNPriceTiers(7, 15, 250n),
   prizeTiers: [
     ...hitTiers([
@@ -296,7 +346,8 @@ const supersete: LotteryConfig = {
   picksMax: 21, // 7 colunas × 3 dígitos
   drawsPerContest: 1,
   extraField: null,
-  drawSchedule: schedule([1, 3, 5], '15:00', 60),
+  // doc 01 §1.2: "Seg, Qua, Sex" — sorteio vespertino (15h). Sem sábado: nada a migrar.
+  drawSchedule: schedule(onDays([1, 3, 5], '15:00')),
   priceTiers: simpleOnlyPriceTiers(7, 300n),
   prizeTiers: hitTiers([
     [7, '7 colunas'],
@@ -317,7 +368,9 @@ const maismilionaria: LotteryConfig = {
   picksMax: 12,
   drawsPerContest: 1,
   extraField: CLOVER_FIELD,
-  drawSchedule: schedule([6], '20:00', 60),
+  // doc 01 §1.2: "Sábado" — único sorteio da semana, migrado para domingo 11h.
+  // TODO confirmar migração dom.
+  drawSchedule: schedule([sundayDraw()]),
   priceTiers: cloverPriceTiers(6, 12, 2, 6, 600n),
   // Faixas cruzadas dezenas × trevos. "1 ou 0 trevo" = duas linhas com o mesmo tier.
   prizeTiers: [
@@ -346,7 +399,10 @@ const loteca: LotteryConfig = {
   picksMax: 42, // 14 jogos × 3 palpites
   drawsPerContest: 1,
   extraField: null,
-  drawSchedule: schedule([6], '20:00', 60),
+  // doc 01 §1.2: "Semanal" — cartela encerrava no sábado, apurada ao longo do fim de semana.
+  // Modelada como domingo 11h (corte 22h de sábado) junto com as demais.
+  // TODO confirmar migração dom.
+  drawSchedule: schedule([sundayDraw()]),
   priceTiers: simpleOnlyPriceTiers(14, 400n),
   prizeTiers: hitTiers([
     [14, '14 acertos'],
@@ -372,7 +428,9 @@ const federal: LotteryConfig = {
   picksMax: 1,
   drawsPerContest: 1,
   extraField: null,
-  drawSchedule: schedule([3, 6], '19:00', 60),
+  // doc 01 §1.2: "2x/semana" — quarta e sábado às 19h. A Federal NÃO está entre as
+  // modalidades migradas para domingo (o bilhete é vendido em fração, não é volante).
+  drawSchedule: schedule(onDays([3, 6], '19:00')),
   priceTiers: [],
   prizeTiers: [],
 }

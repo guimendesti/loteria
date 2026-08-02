@@ -5,6 +5,7 @@ import {
   columnLayout,
   findLotteryConfig,
   getLotteryConfig,
+  type LotterySlug,
 } from '../src/index'
 import { SLUGS } from './helpers'
 
@@ -41,13 +42,15 @@ describe('catálogo de modalidades', () => {
       expect(config.universeMin).toBeLessThanOrEqual(config.universeMax)
       expect(config.picksMin).toBeLessThanOrEqual(config.picksMax)
       expect(config.drawsPerContest).toBeGreaterThanOrEqual(1)
-      expect(config.drawSchedule.days.length).toBeGreaterThan(0)
-      for (const day of config.drawSchedule.days) {
-        expect(day).toBeGreaterThanOrEqual(0)
-        expect(day).toBeLessThanOrEqual(6)
+      expect(config.drawSchedule.entries.length, config.slug).toBeGreaterThan(0)
+      const days = config.drawSchedule.entries.map((entry) => entry.day)
+      expect(new Set(days).size, `${config.slug}: dia repetido na agenda`).toBe(days.length)
+      for (const entry of config.drawSchedule.entries) {
+        expect(entry.day).toBeGreaterThanOrEqual(0)
+        expect(entry.day).toBeLessThanOrEqual(6)
+        expect(entry.time).toMatch(/^\d{2}:\d{2}$/)
+        expect(entry.cutoffMinutes).toBeGreaterThan(0)
       }
-      expect(config.drawSchedule.time).toMatch(/^\d{2}:\d{2}$/)
-      expect(config.drawSchedule.cutoffMinutes).toBeGreaterThan(0)
       for (const tier of config.priceTiers) {
         expect(typeof tier.priceCents).toBe('bigint')
         expect(tier.priceCents > 0n).toBe(true)
@@ -162,5 +165,95 @@ describe('catálogo de modalidades', () => {
     const federal = LOTTERY_CONFIGS.federal
     expect(federal.priceTiers).toHaveLength(0)
     expect(federal.prizeTiers).toHaveLength(0)
+  })
+})
+
+/**
+ * Agenda v2 (`DrawSchedule.entries`): horário e corte POR DIA.
+ * Regra de negócio: doc 01 §1.2, nota de rodapé — em jul/2026 os sorteios de SÁBADO
+ * migraram para DOMINGO às 11h, com apostas encerrando às 22h de sábado.
+ */
+describe('agenda de sorteios (DrawSchedule v2 — horário por dia)', () => {
+  const MINUTES_PER_DAY = 24 * 60
+  const SUNDAY = 0
+  const SATURDAY = 6
+
+  /** Modalidades cujo sorteio sabatino virou domingo. Só a Mega é explícita no doc. */
+  const MIGRATED_TO_SUNDAY: LotterySlug[] = [
+    'megasena',
+    'lotofacil',
+    'quina',
+    'duplasena',
+    'timemania',
+    'diadesorte',
+    'maismilionaria',
+    'loteca',
+  ]
+
+  it('domingo é às 11h e o corte cai às 22h de sábado (780 min antes)', () => {
+    for (const slug of MIGRATED_TO_SUNDAY) {
+      const sunday = getLotteryConfig(slug).drawSchedule.entries.find((e) => e.day === SUNDAY)
+      expect(sunday, slug).toEqual({ day: SUNDAY, time: '11:00', cutoffMinutes: 780 })
+
+      // O corte é contado a partir do horário do sorteio: 11:00 − 780 min = 22:00 do dia anterior.
+      const drawMinutes = 11 * 60
+      const cutoff = drawMinutes - (sunday?.cutoffMinutes ?? 0)
+      expect(((cutoff % MINUTES_PER_DAY) + MINUTES_PER_DAY) % MINUTES_PER_DAY, slug).toBe(22 * 60)
+      expect(cutoff, `${slug}: o corte cai no dia ANTERIOR ao sorteio`).toBeLessThan(0)
+    }
+  })
+
+  it('nenhuma modalidade migrada mantém sorteio no sábado', () => {
+    for (const slug of MIGRATED_TO_SUNDAY) {
+      const days = getLotteryConfig(slug).drawSchedule.entries.map((e) => e.day)
+      expect(days, slug).not.toContain(SATURDAY)
+    }
+  })
+
+  it('Federal não migrou (bilhete numerado, não volante): quarta e sábado às 19h', () => {
+    expect(getLotteryConfig('federal').drawSchedule.entries).toEqual([
+      { day: 3, time: '19:00', cutoffMinutes: 60 },
+      { day: SATURDAY, time: '19:00', cutoffMinutes: 60 },
+    ])
+  })
+
+  it('sorteios de segunda a sexta: 20h com corte de 60 min (Super Sete às 15h, Federal 19h)', () => {
+    for (const config of ALL_LOTTERIES) {
+      if (config.slug === 'federal') continue
+      const expectedTime = config.slug === 'supersete' ? '15:00' : '20:00'
+      for (const entry of config.drawSchedule.entries) {
+        if (entry.day === SUNDAY) continue
+        expect(entry.time, `${config.slug} dia ${entry.day}`).toBe(expectedTime)
+        expect(entry.cutoffMinutes, `${config.slug} dia ${entry.day}`).toBe(60)
+      }
+    }
+  })
+
+  it('grades sem sorteio sabatino ficam inalteradas (seg/qua/sex)', () => {
+    expect(getLotteryConfig('lotomania').drawSchedule.entries.map((e) => e.day)).toEqual([1, 3, 5])
+    expect(getLotteryConfig('supersete').drawSchedule.entries.map((e) => e.day)).toEqual([1, 3, 5])
+  })
+
+  it('Mega-Sena: ter, qui e dom (doc 01 §1.2 "Ter, Qui, Sáb/Dom*")', () => {
+    expect(getLotteryConfig('megasena').drawSchedule.entries).toEqual([
+      { day: 2, time: '20:00', cutoffMinutes: 60 },
+      { day: 4, time: '20:00', cutoffMinutes: 60 },
+      { day: SUNDAY, time: '11:00', cutoffMinutes: 780 },
+    ])
+  })
+
+  it('Lotofácil e Quina sorteiam 6x por semana: seg–sex + dom', () => {
+    for (const slug of ['lotofacil', 'quina'] as const) {
+      expect(getLotteryConfig(slug).drawSchedule.entries.map((e) => e.day), slug).toEqual([
+        1, 2, 3, 4, 5, SUNDAY,
+      ])
+    }
+  })
+
+  it('+Milionária e Loteca sorteiam só aos domingos', () => {
+    for (const slug of ['maismilionaria', 'loteca'] as const) {
+      expect(getLotteryConfig(slug).drawSchedule.entries, slug).toHaveLength(1)
+      expect(getLotteryConfig(slug).drawSchedule.entries[0]?.day, slug).toBe(SUNDAY)
+    }
   })
 })

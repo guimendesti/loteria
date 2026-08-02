@@ -10,6 +10,7 @@ import { initTRPC, TRPCError } from '@trpc/server'
 import superjson from 'superjson'
 import { prisma } from '@lotopro/db'
 import { auth } from '@/lib/auth'
+import { BetValidationError } from '@/server/errors'
 
 export async function createTRPCContext({ req }: { req: Request }) {
   const session = await auth.api.getSession({ headers: req.headers })
@@ -24,6 +25,22 @@ export type Context = Awaited<ReturnType<typeof createTRPCContext>>
 
 const t = initTRPC.context<Context>().create({
   transformer: superjson,
+  /**
+   * Expõe `ValidationError[]` do core (@lotopro/core `validateBet`) em
+   * `shape.data.betValidationErrors` quando o erro carrega um `BetValidationError`
+   * como `cause` — o cliente usa os `code`s para destacar campos do seletor de
+   * dezenas (docs/08 CL-12), além da mensagem humana já em `shape.message`.
+   */
+  errorFormatter({ shape, error }) {
+    return {
+      ...shape,
+      data: {
+        ...shape.data,
+        betValidationErrors:
+          error.cause instanceof BetValidationError ? error.cause.errors : null,
+      },
+    }
+  },
 })
 
 export const router = t.router

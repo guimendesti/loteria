@@ -419,6 +419,7 @@ model BetCheck {
   extraHits  Int?
   prizeTier  Int? // null = não premiado
   prizeCents BigInt   @default(0)
+  tierCounts Json? // v2 — decomposição multi-faixa: [{tier, count, prizeCents:string}]
   drawIndex  Int? // Dupla Sena
   checkedAt  DateTime @default(now())
 

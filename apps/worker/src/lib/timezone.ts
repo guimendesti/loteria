@@ -10,7 +10,7 @@ export const SAO_PAULO_TZ = 'America/Sao_Paulo'
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const
 
 export interface SaoPauloParts {
-  /** 0 = domingo … 6 = sábado — mesma convenção de `DrawSchedule.days`. */
+  /** 0 = domingo … 6 = sábado — mesma convenção de `DrawScheduleEntry.day`. */
   weekday: number
   hour: number
   minute: number
