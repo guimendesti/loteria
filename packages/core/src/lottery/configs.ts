@@ -188,7 +188,7 @@ const lotofacil: LotteryConfig = {
   picksMax: 20,
   drawsPerContest: 1,
   extraField: null,
-  // doc 01 §1.2: "Seg a Sáb" — sábado → domingo 11h. // TODO confirmar migração dom.
+  // CONFIRMADO (S3): sábado → domingo 11h (uma das sete modalidades migradas).
   drawSchedule: schedule([...onDays([1, 2, 3, 4, 5]), sundayDraw()]),
   priceTiers: pickNPriceTiers(15, 20, 350n),
   prizeTiers: hitTiers([
@@ -210,7 +210,7 @@ const quina: LotteryConfig = {
   picksMax: 15,
   drawsPerContest: 1,
   extraField: null,
-  // doc 01 §1.2: "Seg a Sáb" — sábado → domingo 11h. // TODO confirmar migração dom.
+  // CONFIRMADO (S3): sábado → domingo 11h (uma das sete modalidades migradas).
   drawSchedule: schedule([...onDays([1, 2, 3, 4, 5]), sundayDraw()]),
   priceTiers: pickNPriceTiers(5, 15, 300n),
   prizeTiers: hitTiers([
@@ -257,11 +257,10 @@ const duplasena: LotteryConfig = {
   picksMax: 15,
   drawsPerContest: 2, // dois sorteios por concurso
   extraField: null,
-  // doc 01 §1.2: "3x/semana" — a grade da Caixa é ter/qui/sáb (mesma do seed em
-  // packages/db/src/seed-data/lotteries.ts); o sábado migrou para domingo 11h.
-  // (A v1 deste arquivo trazia seg/qua/sex, divergindo do seed — corrigido aqui.)
-  // TODO confirmar migração dom.
-  drawSchedule: schedule([...onDays([2, 4]), sundayDraw()]),
+  // CONFIRMADO (S3, notícias jul/2026): a Dupla Sena NÃO está entre as sete
+  // modalidades migradas para domingo (Mega, Lotofácil, Quina, +Milionária,
+  // Timemania, Dia de Sorte, Federal). Grade 3x/semana em dias úteis.
+  drawSchedule: schedule(onDays([1, 3, 5])),
   priceTiers: pickNPriceTiers(6, 15, 300n),
   prizeTiers: [
     ...hitTiers(
@@ -296,7 +295,7 @@ const timemania: LotteryConfig = {
   drawsPerContest: 1,
   extraField: TEAM_FIELD,
   // doc 01 §1.2: "3x/semana" — ter/qui/sáb; o sábado migrou para domingo 11h.
-  // TODO confirmar migração dom.
+  // CONFIRMADO (S3): sábado → domingo 11h (uma das sete modalidades migradas).
   drawSchedule: schedule([...onDays([2, 4]), sundayDraw()]),
   priceTiers: pickNPriceTiers(10, 10, 350n),
   prizeTiers: [
@@ -322,7 +321,7 @@ const diadesorte: LotteryConfig = {
   drawsPerContest: 1,
   extraField: MONTH_FIELD,
   // doc 01 §1.2: "3x/semana" — ter/qui/sáb; o sábado migrou para domingo 11h.
-  // TODO confirmar migração dom.
+  // CONFIRMADO (S3): sábado → domingo 11h (uma das sete modalidades migradas).
   drawSchedule: schedule([...onDays([2, 4]), sundayDraw()]),
   priceTiers: pickNPriceTiers(7, 15, 250n),
   prizeTiers: [
@@ -369,7 +368,7 @@ const maismilionaria: LotteryConfig = {
   drawsPerContest: 1,
   extraField: CLOVER_FIELD,
   // doc 01 §1.2: "Sábado" — único sorteio da semana, migrado para domingo 11h.
-  // TODO confirmar migração dom.
+  // CONFIRMADO (S3): sábado → domingo 11h (uma das sete modalidades migradas).
   drawSchedule: schedule([sundayDraw()]),
   priceTiers: cloverPriceTiers(6, 12, 2, 6, 600n),
   // Faixas cruzadas dezenas × trevos. "1 ou 0 trevo" = duas linhas com o mesmo tier.
@@ -401,7 +400,7 @@ const loteca: LotteryConfig = {
   extraField: null,
   // doc 01 §1.2: "Semanal" — cartela encerrava no sábado, apurada ao longo do fim de semana.
   // Modelada como domingo 11h (corte 22h de sábado) junto com as demais.
-  // TODO confirmar migração dom.
+  // CONFIRMADO (S3): sábado → domingo 11h (uma das sete modalidades migradas).
   drawSchedule: schedule([sundayDraw()]),
   priceTiers: simpleOnlyPriceTiers(14, 400n),
   prizeTiers: hitTiers([
@@ -428,9 +427,9 @@ const federal: LotteryConfig = {
   picksMax: 1,
   drawsPerContest: 1,
   extraField: null,
-  // doc 01 §1.2: "2x/semana" — quarta e sábado às 19h. A Federal NÃO está entre as
-  // modalidades migradas para domingo (o bilhete é vendido em fração, não é volante).
-  drawSchedule: schedule(onDays([3, 6], '19:00')),
+  // CONFIRMADO (S3, notícias jul/2026): a Federal ESTÁ entre as sete modalidades
+  // migradas — extração de sábado foi para domingo 11h; a de quarta segue às 19h.
+  drawSchedule: schedule([...onDays([3], '19:00'), sundayDraw()]),
   priceTiers: [],
   prizeTiers: [],
 }

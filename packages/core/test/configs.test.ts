@@ -178,16 +178,22 @@ describe('agenda de sorteios (DrawSchedule v2 — horário por dia)', () => {
   const SUNDAY = 0
   const SATURDAY = 6
 
-  /** Modalidades cujo sorteio sabatino virou domingo. Só a Mega é explícita no doc. */
+  /**
+   * As SETE modalidades migradas para domingo 11h — CONFIRMADO (S3) por notícias
+   * de jul/2026 (Metrópoles, Gazeta do Povo, Folha Vitória): Mega-Sena, Lotofácil,
+   * Quina, +Milionária, Timemania, Dia de Sorte e Loteria Federal.
+   * Dupla Sena e Loteca NÃO migraram. A Loteca segue modelada como domingo
+   * (apuração atrelada à rodada de futebol do fim de semana) mas fora desta lista
+   * de "migradas" — ver config.
+   */
   const MIGRATED_TO_SUNDAY: LotterySlug[] = [
     'megasena',
     'lotofacil',
     'quina',
-    'duplasena',
     'timemania',
     'diadesorte',
     'maismilionaria',
-    'loteca',
+    'federal',
   ]
 
   it('domingo é às 11h e o corte cai às 22h de sábado (780 min antes)', () => {
@@ -210,11 +216,18 @@ describe('agenda de sorteios (DrawSchedule v2 — horário por dia)', () => {
     }
   })
 
-  it('Federal não migrou (bilhete numerado, não volante): quarta e sábado às 19h', () => {
+  it('Federal migrou o sábado para domingo; quarta segue às 19h', () => {
     expect(getLotteryConfig('federal').drawSchedule.entries).toEqual([
       { day: 3, time: '19:00', cutoffMinutes: 60 },
-      { day: SATURDAY, time: '19:00', cutoffMinutes: 60 },
+      { day: SUNDAY, time: '11:00', cutoffMinutes: 780 },
     ])
+  })
+
+  it('Dupla Sena e Loteca não estão entre as migradas', () => {
+    expect(getLotteryConfig('duplasena').drawSchedule.entries.map((e) => e.day)).toEqual([1, 3, 5])
+    expect(
+      getLotteryConfig('duplasena').drawSchedule.entries.every((e) => e.time === '20:00'),
+    ).toBe(true)
   })
 
   it('sorteios de segunda a sexta: 20h com corte de 60 min (Super Sete às 15h, Federal 19h)', () => {

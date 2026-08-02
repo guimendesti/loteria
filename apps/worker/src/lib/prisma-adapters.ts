@@ -119,16 +119,14 @@ export function createNotifyPrismaAdapter(prisma: PrismaClient): NotifyPrisma {
         }),
     },
     notification: {
-      // P4 — dedupeKey vive DENTRO do Json `payload` (não há coluna dedicada, ver
-      // comentário de idempotência no cabeçalho de `jobs/notify.ts`). Filtro por
-      // `path`/`equals` é suportado pelo Prisma para Postgres (Json?).
+      // P4 RESOLVIDO (S3): `Notification.dedupeKey` agora é coluna com UNIQUE
+      // (migration 20260802T2_notification_dedupe_key). O findFirst consulta a
+      // coluna; o create grava a coluna — numa corrida, o segundo INSERT viola a
+      // unique (P2002), o job falha e o retry do BullMQ cai no findFirst e vira
+      // no-op. Idempotência garantida pelo banco, não pela aplicação.
       findFirst: ({ where }) =>
         prisma.notification.findFirst({
-          where: {
-            userId: where.userId,
-            type: where.type,
-            payload: { path: ['dedupeKey'], equals: where.dedupeKey },
-          },
+          where: { userId: where.userId, type: where.type, dedupeKey: where.dedupeKey },
           select: { id: true },
         }),
       create: ({ data }) =>
@@ -141,6 +139,9 @@ export function createNotifyPrismaAdapter(prisma: PrismaClient): NotifyPrisma {
             body: data.body,
             payload: data.payload,
             status: data.status,
+            // P4: a dedupeKey vem embutida no payload (contrato do job inalterado);
+            // extraímos para a coluna UNIQUE — é ela que garante a idempotência.
+            dedupeKey: extractDedupeKey(data.payload),
             ...(data.sentAt !== undefined ? { sentAt: data.sentAt } : {}),
             ...(data.error !== undefined ? { error: data.error } : {}),
           },
@@ -190,4 +191,13 @@ export function createAccumulatedAlertPrismaAdapter(prisma: PrismaClient): Accum
       },
     },
   }
+}
+
+/** P4: extrai a dedupeKey embutida no Json `payload` para gravá-la na coluna UNIQUE. */
+function extractDedupeKey(payload: unknown): string | null {
+  if (payload !== null && typeof payload === 'object' && 'dedupeKey' in payload) {
+    const v = (payload as Record<string, unknown>)['dedupeKey']
+    return typeof v === 'string' && v.length > 0 ? v : null
+  }
+  return null
 }

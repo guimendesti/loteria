@@ -604,6 +604,7 @@ model Notification {
   title     String
   body      String
   payload   Json?
+  dedupeKey  String?  @unique // idempotência: tipo:userId:contexto:canal — ver apps/worker/src/jobs/notify.ts
   status    NotificationStatus  @default(QUEUED)
   sentAt    DateTime?
   readAt    DateTime?

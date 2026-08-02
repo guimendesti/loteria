@@ -77,7 +77,7 @@ export const lotteries: LotterySeed[] = [
     picksMax: 20,
     drawsPerContest: 1,
     extraField: null,
-    // "Seg a Sáb" → seg–sex + dom 11h // TODO confirmar migração dom.
+    // "Seg a Sáb" → seg–sex + dom 11h — CONFIRMADO (S3).
     drawSchedule: schedule([...onDays([1, 2, 3, 4, 5]), sundayDraw()]),
     colorToken: '--lot-lotofacil',
   },
@@ -92,7 +92,7 @@ export const lotteries: LotterySeed[] = [
     picksMax: 15,
     drawsPerContest: 1,
     extraField: null,
-    // "Seg a Sáb" → seg–sex + dom 11h // TODO confirmar migração dom.
+    // "Seg a Sáb" → seg–sex + dom 11h — CONFIRMADO (S3).
     drawSchedule: schedule([...onDays([1, 2, 3, 4, 5]), sundayDraw()]),
     colorToken: '--lot-quina',
   },
@@ -124,8 +124,9 @@ export const lotteries: LotterySeed[] = [
     picksMax: 15,
     drawsPerContest: 2, // dois sorteios por concurso — ver PrizeTier.drawIndex / BetCheck.drawIndex
     extraField: null,
-    // ter, qui + dom 11h — o sábado migrou // TODO confirmar migração dom.
-    drawSchedule: schedule([...onDays([2, 4]), sundayDraw()]),
+    // CONFIRMADO (S3, notícias jul/2026): Dupla Sena NÃO está entre as sete
+    // modalidades migradas para domingo. Grade 3x/semana em dias úteis.
+    drawSchedule: schedule(onDays([1, 3, 5])),
     colorToken: '--lot-duplasena',
   },
   {
@@ -139,7 +140,7 @@ export const lotteries: LotterySeed[] = [
     picksMax: 10,
     drawsPerContest: 1,
     extraField: { kind: 'TEAM' }, // time do coração
-    // ter, qui + dom 11h — o sábado migrou // TODO confirmar migração dom.
+    // ter, qui + dom 11h — o sábado migrou — CONFIRMADO (S3).
     drawSchedule: schedule([...onDays([2, 4]), sundayDraw()]),
     colorToken: '--lot-timemania',
   },
@@ -154,7 +155,7 @@ export const lotteries: LotterySeed[] = [
     picksMax: 15,
     drawsPerContest: 1,
     extraField: { kind: 'MONTH' }, // mês da sorte (1–12)
-    // ter, qui + dom 11h — o sábado migrou // TODO confirmar migração dom.
+    // ter, qui + dom 11h — o sábado migrou — CONFIRMADO (S3).
     drawSchedule: schedule([...onDays([2, 4]), sundayDraw()]),
     colorToken: '--lot-diadesorte',
   },
@@ -188,7 +189,7 @@ export const lotteries: LotterySeed[] = [
     picksMax: 12,
     drawsPerContest: 1,
     extraField: { kind: 'CLOVER', min: 1, max: 6, picksMin: 2, picksMax: 6 },
-    // único sorteio da semana, migrado de sábado para domingo 11h // TODO confirmar migração dom.
+    // único sorteio da semana, migrado de sábado para domingo 11h — CONFIRMADO (S3).
     drawSchedule: schedule([sundayDraw()]),
     colorToken: '--lot-maismilionaria',
   },
@@ -204,7 +205,7 @@ export const lotteries: LotterySeed[] = [
     drawsPerContest: 1,
     extraField: null,
     // encerrava no sábado e era apurada ao longo do fim de semana; modelada como domingo 11h
-    // junto com as demais // TODO confirmar migração dom.
+    // junto com as demais — CONFIRMADO (S3).
     drawSchedule: schedule([sundayDraw()]),
     colorToken: '--lot-loteca',
   },
@@ -219,8 +220,9 @@ export const lotteries: LotterySeed[] = [
     picksMax: 1,
     drawsPerContest: 1,
     extraField: null,
-    // quarta e sábado às 19h — a Federal NÃO migrou (bilhete numerado, não é volante)
-    drawSchedule: schedule(onDays([3, 6], '19:00')),
+    // CONFIRMADO (S3, notícias jul/2026): a Federal ESTÁ entre as sete migradas —
+    // extração de sábado foi para domingo 11h; a de quarta segue às 19h.
+    drawSchedule: schedule([...onDays([3], '19:00'), sundayDraw()]),
     colorToken: '--lot-federal',
   },
 ]

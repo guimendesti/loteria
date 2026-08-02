@@ -22,19 +22,13 @@
  *
  * ── Idempotência (P4) ──────────────────────────────────────────────────────────────────
  *
- * ⚠️ `Notification` (schema.prisma) não tem coluna/unique de deduplicação — não é possível
- * adicionar migration neste território (fora do escopo, sem acesso a `packages/db/src`/
- * schema). Paliativo: cada tentativa de canal calcula uma `dedupeKey` DETERMINÍSTICA
- * (`type:userId:lotterySlug:contestNumber:channel`, ou um prefixo mais curto quando o
- * payload não tem `lotterySlug`/`contestNumber`) gravada dentro de `payload.dedupeKey`
- * (Json), e faz `findFirst` por `(userId, type, payload.dedupeKey)` ANTES de agir — para
- * e-mail/push isso pula o `send()` de verdade (evita reenviar, não só duplicar a linha).
- * Isso resolve o caso prático (retry do BullMQ após falha no meio do job cria duas
- * notificações) mas NÃO é à prova de corrida: dois workers processando o mesmo job em
- * paralelo (não deveria acontecer com concorrência normal do BullMQ, mas não há trava de
- * banco) ainda poderiam passar pelo `findFirst` ao mesmo tempo e criar duas linhas. A
- * solução definitiva é uma coluna dedicada + `@@unique` em `Notification` — pendência para
- * o orquestrador (precisa de migration, fora deste território).
+ * RESOLVIDO (S3): `Notification.dedupeKey` é coluna UNIQUE (migration
+ * `20260802T2_notification_dedupe_key`). Cada tentativa de canal calcula uma `dedupeKey`
+ * DETERMINÍSTICA (`type:userId:lotterySlug:contestNumber:channel`, ou prefixo mais curto
+ * sem contexto de concurso), embutida em `payload.dedupeKey` (contrato do job inalterado)
+ * e extraída para a coluna pelo adapter (`lib/prisma-adapters.ts`). O `findFirst` ANTES
+ * de agir evita reenviar e-mail/push no retry; numa corrida real, o segundo INSERT viola
+ * a unique (P2002), o job falha e o retry vira no-op — idempotência garantida pelo banco.
  */
 import { getLotteryConfig, type LotterySlug } from '@lotopro/core'
 import {
