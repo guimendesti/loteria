@@ -54,19 +54,23 @@ export const prizeTiers: PrizeTierSeed[] = [
   { lotterySlug: 'duplasena', tier: 7, label: 'Quadra (2º sorteio)', hits: 4, extraHits: null, drawIndex: 2, isSpecialRule: false },
   { lotterySlug: 'duplasena', tier: 8, label: 'Terno (2º sorteio)', hits: 3, extraHits: null, drawIndex: 2, isSpecialRule: false },
 
-  // ── Timemania: 7..3 acertos ─────────────────────────────────────────────────
+  // ── Timemania: 7..3 acertos + faixa própria do Time do Coração ──────────────
   { lotterySlug: 'timemania', tier: 1, label: '7 acertos', hits: 7, extraHits: null, drawIndex: null, isSpecialRule: false },
   { lotterySlug: 'timemania', tier: 2, label: '6 acertos', hits: 6, extraHits: null, drawIndex: null, isSpecialRule: false },
   { lotterySlug: 'timemania', tier: 3, label: '5 acertos', hits: 5, extraHits: null, drawIndex: null, isSpecialRule: false },
   { lotterySlug: 'timemania', tier: 4, label: '4 acertos', hits: 4, extraHits: null, drawIndex: null, isSpecialRule: false },
   { lotterySlug: 'timemania', tier: 5, label: '3 acertos', hits: 3, extraHits: null, drawIndex: null, isSpecialRule: false },
+  // Faixa independente das dezenas (extraHits: 1, hits: 0 — ver core `extraOnlyTier`/`check.ts`).
+  { lotterySlug: 'timemania', tier: 6, label: 'Time do Coração', hits: 0, extraHits: 1, drawIndex: null, isSpecialRule: false },
 
-  // ── Dia de Sorte: 7..4 acertos, sendo o topo com exigência do mês da sorte ──
-  { lotterySlug: 'diadesorte', tier: 1, label: '7 acertos + mês da sorte', hits: 7, extraHits: 1, drawIndex: null, isSpecialRule: false },
-  { lotterySlug: 'diadesorte', tier: 2, label: '7 acertos', hits: 7, extraHits: null, drawIndex: null, isSpecialRule: false },
-  { lotterySlug: 'diadesorte', tier: 3, label: '6 acertos', hits: 6, extraHits: null, drawIndex: null, isSpecialRule: false },
-  { lotterySlug: 'diadesorte', tier: 4, label: '5 acertos', hits: 5, extraHits: null, drawIndex: null, isSpecialRule: false },
-  { lotterySlug: 'diadesorte', tier: 5, label: '4 acertos', hits: 4, extraHits: null, drawIndex: null, isSpecialRule: false },
+  // ── Dia de Sorte: 7..4 acertos + faixa própria do Mês da Sorte ──────────────
+  // (core modela "Mês da Sorte" como faixa independente das dezenas, não como cruzamento
+  // "7 acertos + mês" — ver comentário `extraOnlyTier` em packages/core/src/lottery/configs.ts)
+  { lotterySlug: 'diadesorte', tier: 1, label: '7 acertos', hits: 7, extraHits: null, drawIndex: null, isSpecialRule: false },
+  { lotterySlug: 'diadesorte', tier: 2, label: '6 acertos', hits: 6, extraHits: null, drawIndex: null, isSpecialRule: false },
+  { lotterySlug: 'diadesorte', tier: 3, label: '5 acertos', hits: 5, extraHits: null, drawIndex: null, isSpecialRule: false },
+  { lotterySlug: 'diadesorte', tier: 4, label: '4 acertos', hits: 4, extraHits: null, drawIndex: null, isSpecialRule: false },
+  { lotterySlug: 'diadesorte', tier: 5, label: 'Mês da Sorte', hits: 0, extraHits: 1, drawIndex: null, isSpecialRule: false },
 
   // ── Super Sete: 7..3 colunas acertadas ──────────────────────────────────────
   { lotterySlug: 'supersete', tier: 1, label: '7 colunas', hits: 7, extraHits: null, drawIndex: null, isSpecialRule: false },

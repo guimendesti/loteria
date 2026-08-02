@@ -45,12 +45,13 @@ pnpm -F @lotopro/db exec prisma format
 `contests` (histórico de concursos) e `closure_matrices` (biblioteca de fechamentos) **não** são
 seeds — são jobs/backfills separados (ver docs/07 §7.11 e docs/06).
 
-## Notas de ambiente desta sessão
+## Consistência com `@lotopro/core`
 
-- `packages/db` ainda não depende de `@lotopro/core` (sem link de workspace configurado). Os
-  tipos em `src/seed-data/types.ts` espelham manualmente o contrato de `packages/core/src/types.ts`
-  — mantenha os dois em sincronia até o link ser criado.
-- `@types/node` foi adicionado a `devDependencies` e resolvido manualmente com um link para o
-  pacote já presente no store do pnpm (`node_modules/.pnpm/@types+node@20.19.43`), sem rodar
-  `pnpm install`, para que `tsc` reconheça `process`/`console` no `seed.ts`. Rode `pnpm install`
-  na raiz quando puder, para que o pnpm gerencie esse link normalmente e o lockfile fique em dia.
+`packages/db` depende de `@lotopro/core` (link de workspace). `src/seed-data/types.ts` importa
+`LotterySlug`/`ExtraFieldConfig`/`LotteryFormat` de lá em vez de duplicá-los — `@lotopro/core`
+é o contrato canônico. `test/seed-consistency.test.ts` garante que os dados de
+`src/seed-data/` (slugs, preço da aposta simples, universo/picks, faixas de premiação) não
+divergem de `packages/core/src/lottery/configs.ts`; duas exceções estruturais (numeração de
+`tier` da Dupla Sena e colapso de "1 ou 0 trevo" da +Milionária), forçadas por
+`@@unique([lotteryId, tier])` no schema Prisma, estão documentadas no topo desse teste e em
+`src/seed-data/prize-tiers.ts`.

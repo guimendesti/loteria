@@ -28,11 +28,8 @@ touchTargetMin             // 44
 .minha-marca { color: var(--brand-500); }
 ```
 
-> `LotterySlug` é exportado por este pacote (`@lotopro/ui`) como um espelho manual do
-> tipo de mesmo nome em `packages/core/src/types.ts`. `@lotopro/core` ainda não é uma
-> dependência instalada de `@lotopro/ui` (fora do escopo desta tarefa — nenhum
-> `pnpm install`/`add` foi executado). Ver comentário em `tokens.ts` para o plano de
-> migração quando a dependência for formalizada.
+> `LotterySlug` é importado (tipo) de `@lotopro/core`, dependência de workspace deste
+> pacote, e reexportado por `tokens.ts`.
 
 ## `NumberBall` (C1)
 
@@ -177,8 +174,6 @@ import { Badge } from '@lotopro/ui'
 
 ## Pendências / fora do escopo desta fase
 
-- `@lotopro/core` real ainda não está linkado como dependência — `LotterySlug` é uma cópia
-  manual em `tokens.ts` (ver comentário no arquivo).
 - Container query para colunas do `NumberGrid` (hoje resolvido via prop `columns`).
 - Barra fixa de rodapé, ações rápidas (Surpresinha/Limpar/Repetir/Favoritas) e campo extra
   (trevos/mês/time) do C2 completo — não fazem parte do contrato de props desta tarefa;

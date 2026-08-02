@@ -34,7 +34,7 @@ export const lotteries: LotterySeed[] = [
     universeMin: 1,
     universeMax: 60,
     picksMin: 6,
-    picksMax: 15,
+    picksMax: 20,
     drawsPerContest: 1,
     extraField: null,
     drawSchedule: { days: [3, 6], time: '20:00', cutoffMinutes: 60, tz: 'America/Sao_Paulo' }, // quarta e sábado
@@ -73,8 +73,10 @@ export const lotteries: LotterySeed[] = [
     name: 'Lotomania',
     caixaApiSlug: 'lotomania',
     format: 'PICK_N',
-    universeMin: 1,
-    universeMax: 100,
+    // Volante 00–99; "00" é representado como 0 (universo 0–99, 100 dezenas) — mesma
+    // convenção de packages/core/src/lottery/configs.ts.
+    universeMin: 0,
+    universeMax: 99,
     picksMin: 50, // aposta é sempre de 50 dezenas fixas
     picksMax: 50,
     drawsPerContest: 1,
@@ -129,12 +131,14 @@ export const lotteries: LotterySeed[] = [
     name: 'Super Sete',
     caixaApiSlug: 'supersete',
     format: 'COLUMNS',
-    // universo por coluna: dígitos 0–9. picksMin/Max = qtde de números marcados POR COLUNA
-    // (1 a 3 — mesma regra documentada em packages/core/src/types.ts `BetInput.columns`).
+    // universo por coluna: dígitos 0–9. picksMin/Max seguem a convenção de
+    // packages/core/src/lottery/configs.ts (`columnLayout`): picksMin = nº de colunas
+    // (7), picksMax = colunas × máx. de palpites por coluna (7 × 3 = 21) — não o nº de
+    // palpites por coluna isoladamente (esse é 1–3, ver `BetInput.columns` no core).
     universeMin: 0,
     universeMax: 9,
-    picksMin: 1,
-    picksMax: 3,
+    picksMin: 7,
+    picksMax: 21,
     drawsPerContest: 1,
     extraField: null,
     drawSchedule: { days: [1, 3, 5], time: '15:00', cutoffMinutes: 60, tz: 'America/Sao_Paulo' }, // segunda, quarta e sexta — sorteio vespertino
@@ -162,7 +166,7 @@ export const lotteries: LotterySeed[] = [
     universeMin: 1, // 1 = mandante vence
     universeMax: 3, // 3 = visitante vence (2 = empate)
     picksMin: 14, // 14 jogos por cartela, sempre
-    picksMax: 14,
+    picksMax: 42, // 14 jogos × até 3 palpites (duplos/triplos) por jogo
     drawsPerContest: 1,
     extraField: null,
     drawSchedule: { days: [6], time: '19:00', cutoffMinutes: 120, tz: 'America/Sao_Paulo' }, // encerra sábado, resultado apurado ao longo do fim de semana

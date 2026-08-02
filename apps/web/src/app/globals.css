@@ -1,0 +1,24 @@
+/* Tokens em CSS puro (variáveis --brand-*, --ink-*, --lot-*, ...) — fonte em
+   packages/ui/src/tokens.css (docs/09-design-system-e-ux.md §9.2). */
+@import '@lotopro/ui/src/tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    font-family: var(--font-inter), var(--font-body);
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-sora), var(--font-display);
+  }
+}

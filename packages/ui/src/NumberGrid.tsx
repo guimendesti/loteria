@@ -20,7 +20,7 @@ import * as React from 'react'
 import { NumberBall, describeNumberBall } from './NumberBall'
 import type { NumberBallState } from './NumberBall'
 import { colors, touchTargetMin } from './tokens'
-import type { LotterySlug } from './tokens'
+import type { LotterySlug } from '@lotopro/core'
 
 export interface NumberGridProps {
   /** Menor dezena do universo da modalidade (ex.: 1). */

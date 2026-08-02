@@ -166,19 +166,25 @@ model User {
   id              String      @id @default(cuid())
   tenantId        String
   email           String
+  // Better Auth (adapter Prisma, defaults): exige Boolean `emailVerified`,
+  // `image` e `updatedAt`. `emailVerifiedAt` mantido para semântica de data.
+  emailVerified   Boolean     @default(false)
   emailVerifiedAt DateTime?
   name            String
   phone           String?
-  passwordHash    String? // null se só OAuth
+  passwordHash    String? // legado/reserva — Better Auth guarda hash em Account.password
   avatarUrl       String?
+  image           String? // Better Auth (avatar de OAuth); avatarUrl é o campo de produto
   role            UserRole    @default(CUSTOMER)
-  isAdult         Boolean     @default(false) // declaração obrigatória
+  isAdult         Boolean     @default(false) // declaração obrigatória (AU-01)
+  termsAcceptedAt DateTime? // aceite dos Termos de Uso registrado com timestamp
   pixKeyEncrypted String? // AES-256-GCM — só para organizador de bolão
   pixKeyType      PixKeyType?
   timezone        String      @default("America/Sao_Paulo")
   lastSeenAt      DateTime?
   deletedAt       DateTime? // soft delete / anonimização LGPD
   createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @default(now()) @updatedAt
 
   tenant                 Tenant                  @relation(fields: [tenantId], references: [id])
   subscription           Subscription?
@@ -188,13 +194,66 @@ model User {
   strategies             Strategy[]
   notificationPreference NotificationPreference?
   usageCounters          UsageCounter[]
+  sessions               Session[]
+  accounts               Account[]
+  // ⚠️ Better Auth busca usuário por email SEM tenant (findFirst). Com tenant
+  // único ("platform") isso é seguro; ao ativar white-label (multi-tenant),
+  // a estratégia de auth por tenant precisa ser revista (ver ORQUESTRACAO.md).
 
   @@unique([tenantId, email])
   @@index([tenantId, deletedAt])
 }
 
+// ── Better Auth (defaults do prismaAdapter) ─────────────────────────────────
+
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@index([userId])
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String // id do usuário no provedor (ou userId p/ credential)
+  providerId            String // "credential" | "google" | ...
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String? // hash (scrypt) gerido pelo Better Auth
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @default(now()) @updatedAt
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @default(now()) @updatedAt
+
+  @@index([identifier])
+}
+
 enum UserRole {
   CUSTOMER
+  VIEWER
   SUPPORT
   FINANCE
   ADMIN

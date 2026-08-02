@@ -8,7 +8,7 @@
  */
 import * as React from 'react'
 import { colors, lotteryColors, radii } from './tokens'
-import type { LotterySlug } from './tokens'
+import type { LotterySlug } from '@lotopro/core'
 
 export type NumberBallState = 'default' | 'selected' | 'drawn' | 'hit' | 'missed' | 'disabled'
 export type NumberBallSize = 'sm' | 'md' | 'lg'

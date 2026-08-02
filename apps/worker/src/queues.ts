@@ -1,0 +1,113 @@
+/**
+ * Definição tipada das filas BullMQ do worker LotoPro (docs/06 §6.6/§6.7, docs/08 parte E).
+ *
+ * Três filas:
+ *  - `sync-results` (SY-01): varre a Caixa por modalidade e persiste concursos novos.
+ *  - `check-bets`   (SY-03): confere apostas ativas contra um concurso recém-persistido.
+ *  - `notify`       (SY-04, esqueleto por ora): grava notificação para um usuário.
+ *
+ * Cada payload tem um schema Zod exportado — os jobs fazem `schema.parse(job.data)` antes
+ * de processar, então um payload corrompido falha cedo e com mensagem clara em vez de
+ * quebrar no meio do processamento.
+ */
+import { z } from 'zod'
+import Redis from 'ioredis'
+import { Queue } from 'bullmq'
+import { ALL_LOTTERIES, type LotterySlug } from '@lotopro/core'
+import type { WorkerConfig } from './config'
+
+// ─── Slug de modalidade como enum Zod ────────────────────────────────────────
+// `LotterySlug` é um union type puro em @lotopro/core (sem schema Zod companion).
+// Derivamos o enum do catálogo estático (`ALL_LOTTERIES`) para não duplicar a lista de
+// modalidades aqui — se um slug for adicionado/removido em core, este enum acompanha.
+
+function lotterySlugTuple(): [LotterySlug, ...LotterySlug[]] {
+  const [first, ...rest] = ALL_LOTTERIES.map((config) => config.slug)
+  if (first === undefined) {
+    throw new Error('ALL_LOTTERIES está vazio — impossível derivar o enum de LotterySlug')
+  }
+  return [first, ...rest]
+}
+
+export const lotterySlugSchema = z.enum(lotterySlugTuple())
+
+// ─── Nomes das filas ──────────────────────────────────────────────────────────
+
+export const QUEUE_NAMES = {
+  SYNC_RESULTS: 'sync-results',
+  CHECK_BETS: 'check-bets',
+  NOTIFY: 'notify',
+} as const
+
+export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES]
+
+// ─── Payloads ──────────────────────────────────────────────────────────────
+
+/**
+ * Job da fila `sync-results`. `lotterySlugs`, quando presente, restringe a corrida a essas
+ * modalidades (usado pelo gate de janela quente/fria do scheduler — ver `src/scheduler.ts`);
+ * ausente = sincroniza todas as modalidades ativas (uso administrativo/manual).
+ */
+export const syncResultsJobSchema = z.object({
+  triggeredAt: z.string().datetime(),
+  reason: z.enum(['schedule', 'manual']).default('schedule'),
+  lotterySlugs: z.array(lotterySlugSchema).optional(),
+})
+export type SyncResultsJobData = z.infer<typeof syncResultsJobSchema>
+
+/** Job da fila `check-bets`, emitido por `sync-results` quando um concurso novo é persistido. */
+export const checkBetsJobSchema = z.object({
+  lotterySlug: lotterySlugSchema,
+  contestNumber: z.number().int().positive(),
+})
+export type CheckBetsJobData = z.infer<typeof checkBetsJobSchema>
+
+/**
+ * Job da fila `notify`. Por ora só alimenta `Notification` (canal IN_APP) — e-mail/push
+ * ficam para onda futura (SY-04 completo: canal por preferência, plano e horário de silêncio).
+ */
+export const notifyJobSchema = z.object({
+  userId: z.string().min(1),
+  /** ex.: "bet.prized" | "bet.checked" — livre, vira `Notification.type`. */
+  type: z.string().min(1),
+  title: z.string().min(1),
+  body: z.string().min(1),
+  payload: z.record(z.unknown()).optional(),
+})
+export type NotifyJobData = z.infer<typeof notifyJobSchema>
+
+// ─── Conexão Redis ────────────────────────────────────────────────────────────
+
+/**
+ * Conexão ioredis dedicada para BullMQ. `maxRetriesPerRequest: null` é exigido pelo BullMQ
+ * para comandos bloqueantes (BRPOPLPUSH etc. usados internamente pelo Worker) — sem isso,
+ * o cliente desiste de comandos bloqueantes após N tentativas e o worker trava
+ * silenciosamente. `lazyConnect: true` para o `.connect()` ser explícito no bootstrap
+ * (permite falhar alto e cedo em vez de conectar no import).
+ */
+export function createRedisConnection(config: Pick<WorkerConfig, 'REDIS_URL'>): Redis {
+  return new Redis(config.REDIS_URL, {
+    maxRetriesPerRequest: null,
+    lazyConnect: true,
+  })
+}
+
+// ─── Filas ────────────────────────────────────────────────────────────────────
+
+export interface Queues {
+  syncResults: Queue<SyncResultsJobData>
+  checkBets: Queue<CheckBetsJobData>
+  notify: Queue<NotifyJobData>
+}
+
+export function createQueues(connection: Redis): Queues {
+  return {
+    syncResults: new Queue<SyncResultsJobData>(QUEUE_NAMES.SYNC_RESULTS, { connection }),
+    checkBets: new Queue<CheckBetsJobData>(QUEUE_NAMES.CHECK_BETS, { connection }),
+    notify: new Queue<NotifyJobData>(QUEUE_NAMES.NOTIFY, { connection }),
+  }
+}
+
+export async function closeQueues(queues: Queues): Promise<void> {
+  await Promise.all([queues.syncResults.close(), queues.checkBets.close(), queues.notify.close()])
+}

@@ -17,13 +17,15 @@ export const PRICE_TIERS_VALID_FROM = new Date('2025-07-01T00:00:00-03:00')
 export const priceTiers: PriceTierSeed[] = [
   { lotterySlug: 'megasena', picks: 6, extraPicks: null, priceCents: 600n }, // R$ 6,00
   { lotterySlug: 'lotofacil', picks: 15, extraPicks: null, priceCents: 350n }, // R$ 3,50
-  { lotterySlug: 'quina', picks: 5, extraPicks: null, priceCents: 250n }, // R$ 2,50
+  { lotterySlug: 'quina', picks: 5, extraPicks: null, priceCents: 300n }, // R$ 3,00
   { lotterySlug: 'lotomania', picks: 50, extraPicks: null, priceCents: 300n }, // R$ 3,00
   { lotterySlug: 'duplasena', picks: 6, extraPicks: null, priceCents: 300n }, // R$ 3,00
   { lotterySlug: 'timemania', picks: 10, extraPicks: null, priceCents: 350n }, // R$ 3,50
   { lotterySlug: 'diadesorte', picks: 7, extraPicks: null, priceCents: 250n }, // R$ 2,50
-  { lotterySlug: 'supersete', picks: 1, extraPicks: null, priceCents: 300n }, // R$ 3,00 (1 número por coluna)
-  { lotterySlug: 'maismilionaria', picks: 6, extraPicks: 2, priceCents: 650n }, // R$ 6,50 (6 dezenas + 2 trevos)
-  { lotterySlug: 'loteca', picks: 14, extraPicks: null, priceCents: 350n }, // R$ 3,50
-  { lotterySlug: 'federal', picks: 1, extraPicks: null, priceCents: 600n }, // R$ 6,00 (fração de bilhete)
+  { lotterySlug: 'supersete', picks: 7, extraPicks: null, priceCents: 300n }, // R$ 3,00 (7 colunas × 1 dígito — aposta simples)
+  { lotterySlug: 'maismilionaria', picks: 6, extraPicks: 2, priceCents: 600n }, // R$ 6,00 (6 dezenas + 2 trevos)
+  { lotterySlug: 'loteca', picks: 14, extraPicks: null, priceCents: 400n }, // R$ 4,00
+  // Federal: SEM price_tier de propósito — packages/core/src/lottery/configs.ts modela o
+  // preço como "Variável" (fração de bilhete) e não define priceTiers para esta modalidade;
+  // validateBet/priceBet do motor devolvem NO_PRICE_TIER. Ver comentário em configs.ts.
 ]

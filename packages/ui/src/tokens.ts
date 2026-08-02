@@ -8,31 +8,9 @@
  * uma config Tailwind em apps/web.
  */
 
-/**
- * Espelho de `LotterySlug` (packages/core/src/types.ts).
- *
- * DECISÃO: `@lotopro/core` não está declarado como dependência de
- * `@lotopro/ui` nem linkado no workspace (não foi executado `pnpm install`/
- * `add` — fora do escopo desta tarefa, que é restrita a packages/ui/).
- * Consumir o tipo do pacote real exigiria essa instalação. Até lá, esta é
- * uma cópia exata da união de packages/core/src/types.ts — quando a
- * dependência for formalizada, trocar por:
- *   import type { LotterySlug } from '@lotopro/core'
- * e remover esta declaração local (mantendo o nome exportado igual para
- * não quebrar os demais arquivos deste pacote).
- */
-export type LotterySlug =
-  | 'megasena'
-  | 'lotofacil'
-  | 'quina'
-  | 'lotomania'
-  | 'duplasena'
-  | 'timemania'
-  | 'diadesorte'
-  | 'supersete'
-  | 'maismilionaria'
-  | 'loteca'
-  | 'federal'
+import type { LotterySlug } from '@lotopro/core'
+
+export type { LotterySlug }
 
 /** Paleta brand / ink / semântica (docs/09 §9.2). */
 export const colors = {

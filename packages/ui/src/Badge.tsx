@@ -5,7 +5,7 @@
  */
 import * as React from 'react'
 import { lotteryColors, radii } from './tokens'
-import type { LotterySlug } from './tokens'
+import type { LotterySlug } from '@lotopro/core'
 
 const LOTTERY_NAME: Record<LotterySlug, string> = {
   megasena: 'Mega-Sena',

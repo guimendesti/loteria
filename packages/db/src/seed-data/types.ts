@@ -1,46 +1,24 @@
 /**
  * Tipos locais para os dados de seed.
  *
- * ⚠️ `packages/db` não depende de `@lotopro/core` (não há workspace link configurado
- * nesta sessão — ver README.md deste pacote). Os tipos abaixo por isso são declarados
- * localmente, mas devem permanecer estruturalmente idênticos aos equivalentes em
- * `packages/core/src/types.ts` (`LotterySlug`, `LotteryFormat`, `ExtraFieldConfig`,
- * `DrawSchedule`, `PriceTierData`, `PrizeTierData`). Se o contrato do domínio mudar,
- * atualize aqui também.
+ * `LotterySlug` e `ExtraFieldConfig` vêm de `@lotopro/core` (dependência de workspace
+ * deste pacote — ver package.json), que é o contrato canônico do domínio LotoPro.
+ * `LotteryFormatSlug` é um alias local de `LotteryFormat` (mesmo pacote) — nome mantido
+ * por compatibilidade com o restante deste diretório e para não colidir com o enum
+ * `LotteryFormat` gerado pelo Prisma e reexportado por `../index.ts`.
+ *
+ * Os tipos abaixo (`LotterySeed`, `PriceTierSeed`, `PrizeTierSeed`, `DrawScheduleConfig`)
+ * são específicos do seed — linhas das tabelas `lotteries`/`price_tiers`/`prize_tiers` —
+ * e não têm equivalente em `@lotopro/core`.
  */
+import type { DrawSchedule, ExtraFieldConfig, LotteryFormat, LotterySlug } from '@lotopro/core'
 
-// Mesma união de packages/core/src/types.ts → LotterySlug
-export type LotterySlug =
-  | 'megasena'
-  | 'lotofacil'
-  | 'quina'
-  | 'lotomania'
-  | 'duplasena'
-  | 'timemania'
-  | 'diadesorte'
-  | 'supersete'
-  | 'maismilionaria'
-  | 'loteca'
-  | 'federal'
+export type { LotterySlug, ExtraFieldConfig }
+export type LotteryFormatSlug = LotteryFormat
 
-// Mesma união de packages/core/src/types.ts → LotteryFormat
-export type LotteryFormatSlug = 'PICK_N' | 'COLUMNS' | 'MATCH_LIST'
-
-// Mesma união de packages/core/src/types.ts → ExtraFieldConfig
-export type ExtraFieldConfig =
-  | { kind: 'CLOVER'; min: number; max: number; picksMin: number; picksMax: number } // +Milionária
-  | { kind: 'MONTH' } // Dia de Sorte (1–12)
-  | { kind: 'TEAM' } // Timemania
-
-// Superset de packages/core/src/types.ts → DrawSchedule (inclui `tz`, conforme o
-// exemplo de JSON em docs/07-modelo-de-dados.md §7.3, campo `Lottery.drawSchedule`).
-export interface DrawScheduleConfig {
-  /** Dias da semana com sorteio: 0=domingo … 6=sábado */
-  days: number[]
-  /** Horário do sorteio, HH:mm */
-  time: string
-  /** Minutos ANTES do sorteio em que as apostas encerram */
-  cutoffMinutes: number
+// Superset de `DrawSchedule` (@lotopro/core) — inclui `tz`, conforme o exemplo de JSON em
+// docs/07-modelo-de-dados.md §7.3, campo `Lottery.drawSchedule`.
+export interface DrawScheduleConfig extends DrawSchedule {
   tz: string
 }
 
@@ -63,7 +41,12 @@ export interface LotterySeed {
 
 export interface PriceTierSeed {
   lotterySlug: LotterySlug
-  /** nº de dezenas (ou, em COLUMNS, nº de números marcados por coluna) da aposta simples */
+  /**
+   * `picks` da aposta simples — igual ao `picksMin` da modalidade em `./lotteries.ts`.
+   * Em COLUMNS/MATCH_LIST (Super Sete, Loteca) é o TOTAL (colunas × palpites mínimo por
+   * coluna, ex.: Super Sete = 7 colunas × 1 = 7), na mesma convenção de
+   * `packages/core/src/lottery/configs.ts` — não o nº de palpites por coluna isoladamente.
+   */
   picks: number
   /** nº de trevos (+Milionária) */
   extraPicks: number | null
