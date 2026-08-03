@@ -207,3 +207,61 @@ export function adminProcedure(min: AdminRole) {
     return next({ ctx: { ...ctx, adminRole } })
   })
 }
+
+// ─── Navegação do backoffice ────────────────────────────────────────────────────────────
+
+/**
+ * Um item do menu do backoffice (`(admin)/components/AdminNav.tsx`) e o acesso mínimo para
+ * enxergá-lo — achado de auditoria (severidade média): o menu mostrava TODAS as seções para
+ * qualquer admin, inclusive as que o papel dele levaria 403 ao abrir (ex.: "Financeiro" para
+ * SUPPORT, que não tem `billing:read`) — vaza a topologia do backoffice para quem não pode
+ * usá-la. `minRole`/`permission` abaixo são exatamente o `min` de `adminProcedure` e a
+ * `AdminPermission` que a query PRINCIPAL (a que carrega a seção ao abrir a página) já exige
+ * no servidor — nunca uma regra nova, só espelhando o gate que já existe em cada router.
+ *
+ * `(admin)/layout.tsx` (server component, lê a sessão) filtra com `canAccessNavSection` e
+ * passa só os itens permitidos para `AdminNav` — que é `'use client'` e NUNCA pode importar
+ * este módulo em tempo de execução (ele carrega `@trpc/server`/`@/server/trpc`/Prisma,
+ * inseguros no bundle do navegador); só o tipo `AdminNavSection`, via `import type`, é
+ * seguro do lado do cliente (mesmo padrão já usado por `AdminRoleContext.tsx`).
+ */
+export interface AdminNavSection {
+  href: string
+  label: string
+  /** Rank mínimo — o mesmo `min` que a query principal da seção passa para `adminProcedure`. */
+  minRole: AdminRole
+  /** Permissão fina adicional, quando a query principal também chama `requirePermission`. */
+  permission?: AdminPermission
+}
+
+export const ADMIN_NAV_SECTIONS: readonly AdminNavSection[] = [
+  // dashboard.{kpis,growth,funnel,systemHealth} — só adminProcedure('VIEWER'), sem gate fino.
+  { href: '/admin', label: 'Dashboard', minRole: 'VIEWER', permission: 'metrics:read' },
+  // users.list — só adminProcedure('VIEWER'), sem gate fino (D.1: VIEWER vê "listagens").
+  { href: '/admin/usuarios', label: 'Usuários', minRole: 'VIEWER', permission: 'users:list' },
+  // bets.list — só adminProcedure('VIEWER'), sem `AdminPermission` dedicada (só
+  // `reprocessChecks`, um botão DENTRO da página, exige `checks:reprocess`).
+  { href: '/admin/apostas', label: 'Apostas', minRole: 'VIEWER' },
+  // finance.* — TODA procedure exige adminProcedure('FINANCE') + requirePermission(ctx,
+  // 'billing:read'/'billing:write'), sem exceção — um SUPPORT ou VIEWER tomaria 403 na
+  // primeira query da página (o exemplo concreto do achado de auditoria).
+  { href: '/admin/financeiro', label: 'Financeiro', minRole: 'FINANCE', permission: 'billing:read' },
+  // config.lotteries.list — só adminProcedure('VIEWER'), sem gate fino (leitura aberta;
+  // `update`/`resync`/`fixContest` exigem ADMIN, mas isso é dentro da página, não no menu).
+  { href: '/admin/config', label: 'Configurações', minRole: 'VIEWER' },
+  // support.* — TODA procedure exige adminProcedure('SUPPORT') + requirePermission(ctx,
+  // 'support:read'), sem exceção — um FINANCE ou VIEWER tomaria 403 na primeira query.
+  { href: '/admin/suporte', label: 'Suporte', minRole: 'SUPPORT', permission: 'support:read' },
+] as const
+
+/**
+ * `true` quando `role` passa no MESMO gate grosso+fino que a query principal da seção já
+ * exige no servidor. Rank sozinho NÃO decide seções onde `minRole` é `SUPPORT`/`FINANCE`
+ * (mesmo rank, papéis paralelos — ver docblock do módulo): por isso `permission`, quando
+ * presente, é sempre checado também.
+ */
+export function canAccessNavSection(role: AdminRole, section: AdminNavSection): boolean {
+  if (ROLE_RANK[role] < ROLE_RANK[section.minRole]) return false
+  if (section.permission !== undefined && !hasPermission(role, section.permission)) return false
+  return true
+}

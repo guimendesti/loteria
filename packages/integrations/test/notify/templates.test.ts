@@ -8,6 +8,8 @@ import {
   contestAccumulatedTemplate,
   formatMillionsBRL,
   poolBetPlacedTemplate,
+  poolPaymentConfirmedTemplate,
+  poolPaymentDeclaredTemplate,
   poolPaymentPendingTemplate,
   poolPrizedTemplate,
   renderPlainTemplate,
@@ -71,23 +73,43 @@ describe('formatMillionsBRL', () => {
   })
 })
 
-describe('pool.* — placeholders (doc 9.6, ainda sem job que enfileire)', () => {
-  it('pool.payment_pending', () => {
+describe('pool.* — Onda 8 (apps/worker/src/jobs/pool-notify.ts)', () => {
+  it('pool.member_joined (poolPaymentPendingTemplate)', () => {
     const result = poolPaymentPendingTemplate({ memberName: 'João', poolName: 'Escritório', shares: 2 })
     expect(result.subject).toBe('João entrou no bolão "Escritório"')
     expect(result.text).toBe('2 cotas · aguardando pagamento.')
   })
 
-  it('pool.bet_placed', () => {
+  it('pool.payment_declared — avisa o organizador', () => {
+    const result = poolPaymentDeclaredTemplate({ memberName: 'João', poolName: 'Escritório' })
+    expect(result.subject).toBe('João declarou pagamento no bolão "Escritório"')
+    expect(result.text).toBe('Confirme o recebimento para liberar a cota.')
+    expect(result.subject.length).toBeLessThanOrEqual(60)
+  })
+
+  it('pool.payment_confirmed — avisa o participante', () => {
+    const result = poolPaymentConfirmedTemplate({ poolName: 'Escritório' })
+    expect(result.subject).toBe('Pagamento confirmado no bolão "Escritório"')
+    expect(result.text).toBe('Você já está garantido nessa aposta.')
+    expect(result.subject.length).toBeLessThanOrEqual(60)
+  })
+
+  it('pool.receipt_attached (poolBetPlacedTemplate)', () => {
     const result = poolBetPlacedTemplate({ poolName: 'Escritório' })
     expect(result.subject).toBe('Bolão "Escritório" apostado ✅')
     expect(result.text).toBe('O comprovante já está disponível para todos.')
   })
 
-  it('pool.prized', () => {
+  it('pool.prized (poolPrizedTemplate)', () => {
     const result = poolPrizedTemplate({ poolName: 'Escritório', memberShareText: 'R$ 340,00' })
     expect(result.subject).toBe('🎉 O bolão "Escritório" foi premiado!')
     expect(result.text).toBe('Sua parte: R$ 340,00. Veja o rateio.')
+  })
+
+  it('escapa HTML no nome do bolão/membro (defesa em profundidade)', () => {
+    const declared = poolPaymentDeclaredTemplate({ memberName: '<b>X</b>', poolName: 'Y' })
+    expect(declared.html).not.toContain('<b>X</b>')
+    expect(declared.html).toContain('&lt;b&gt;X&lt;/b&gt;')
   })
 })
 

@@ -19,6 +19,8 @@ import type {
   ContestAccumulatedTemplatePayload,
   NotificationTemplateOutput,
   PoolBetPlacedTemplatePayload,
+  PoolPaymentConfirmedTemplatePayload,
+  PoolPaymentDeclaredTemplatePayload,
   PoolPaymentPendingTemplatePayload,
   PoolPrizedTemplatePayload,
 } from './types'
@@ -124,15 +126,34 @@ export function contestAccumulatedTemplate(payload: ContestAccumulatedTemplatePa
   return renderTemplate(subject, text)
 }
 
-// ─── pool.* — PLACEHOLDER (doc 9.6, linhas 6–8) ───────────────────────────────
+// ─── pool.* — (doc 9.6, linhas "Bolão — ...") ──────────────────────────────────
 //
-// Nenhum job de `apps/worker` hoje enfileira `notify` com estes tipos — bolões (SY-*
-// específico de Pool) não fazem parte deste território. As funções existem prontas para
-// quando esse job existir; textos já são os exatos do doc, só falta o payload real.
+// Onda 8 (`apps/worker/src/jobs/pool-notify.ts`) é o primeiro job a enfileirar `notify` com
+// estes tipos — ver `buildEmailContent` em `apps/worker/src/jobs/notify.ts` para o mapeamento
+// `type` → template. `poolPaymentPendingTemplate`/`poolBetPlacedTemplate`/`poolPrizedTemplate`
+// já existiam como placeholder (textos exatos do doc); `poolPaymentDeclaredTemplate` e
+// `poolPaymentConfirmedTemplate` são novos desta tarefa (sem linha própria anterior no doc —
+// texto autoral no mesmo tom, adicionado à tabela).
 
 export function poolPaymentPendingTemplate(payload: PoolPaymentPendingTemplatePayload): NotificationTemplateOutput {
   const subject = `${payload.memberName} entrou no bolão "${payload.poolName}"`
   const text = `${payload.shares} cota${payload.shares === 1 ? '' : 's'} · aguardando pagamento.`
+  return renderTemplate(subject, text)
+}
+
+/** doc 9.6, linha "Bolão — pagamento declarado" — avisa o ORGANIZADOR. */
+export function poolPaymentDeclaredTemplate(payload: PoolPaymentDeclaredTemplatePayload): NotificationTemplateOutput {
+  const subject = `${payload.memberName} declarou pagamento no bolão "${payload.poolName}"`
+  const text = 'Confirme o recebimento para liberar a cota.'
+  return renderTemplate(subject, text)
+}
+
+/** doc 9.6, linha "Bolão — pagamento confirmado" — avisa o PARTICIPANTE. */
+export function poolPaymentConfirmedTemplate(
+  payload: PoolPaymentConfirmedTemplatePayload,
+): NotificationTemplateOutput {
+  const subject = `Pagamento confirmado no bolão "${payload.poolName}"`
+  const text = 'Você já está garantido nessa aposta.'
   return renderTemplate(subject, text)
 }
 

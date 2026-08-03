@@ -311,6 +311,8 @@ export const adminUsersRouter = router({
       entityId: input.userId,
       before,
       after: { planSlug: plan.slug, reason: input.reason },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
     })
 
     return { subscriptionId: subscription.id, planSlug: plan.slug }
@@ -384,6 +386,8 @@ export const adminUsersRouter = router({
       entityId: input.userId,
       before,
       after: { planSlug: trialPlan.slug, trialEndsAt, reason: input.reason },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
     })
 
     return { subscriptionId: subscription.id, trialEndsAt }
@@ -417,6 +421,8 @@ export const adminUsersRouter = router({
       entityId: input.userId,
       before: { role: user.role },
       after: { role: input.role, reason: input.reason },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
     })
 
     return updated
@@ -458,6 +464,8 @@ export const adminUsersRouter = router({
         sessionsRevoked: revoked.count,
         ...(input.reason !== undefined ? { reason: input.reason } : {}),
       },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
     })
 
     return {
@@ -535,6 +543,8 @@ export const adminUsersRouter = router({
       entityType: 'User',
       entityId: input.userId,
       after: { exportedAt, sections: Object.keys(payload) },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
     })
 
     return payload
@@ -617,6 +627,8 @@ export const adminUsersRouter = router({
       // `after.email` é o placeholder derivado do id (não identifica a pessoa).
       before: { anonymizedFields: ['email', 'name', 'phone', 'avatarUrl', 'image', 'passwordHash', 'pixKey', 'role'] },
       after: { email: anonymizedEmail, name: anonymizedName, reason: input.reason },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
     })
 
     return { userId: updated.id, anonymizedAt: updated.deletedAt }

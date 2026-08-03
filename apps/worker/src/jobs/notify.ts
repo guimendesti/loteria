@@ -57,6 +57,11 @@ import {
   billingPaymentFailedTemplate,
   billingTrialEndedTemplate,
   contestAccumulatedTemplate,
+  poolBetPlacedTemplate,
+  poolPaymentConfirmedTemplate,
+  poolPaymentDeclaredTemplate,
+  poolPaymentPendingTemplate,
+  poolPrizedTemplate,
   renderPlainTemplate,
   type BillingDowngradedTemplatePayload,
   type EmailSender,
@@ -68,6 +73,7 @@ import { NotificationChannel, NotificationStatus, Prisma } from '@lotopro/db'
 import { notifyJobSchema, type NotifyJobData } from '../queues'
 import { parseTimeOfDay } from '../scheduler'
 import { getSaoPauloParts } from '../lib/timezone'
+import { centsToBRL } from '../lib/money'
 import type { Logger } from '../lib/logger'
 
 // ─── Interface mínima de Prisma ────────────────────────────────────────────────
@@ -219,6 +225,13 @@ function asNonEmptyString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
 }
 
+/** Onda 8 — `amountCents` chega como STRING no payload (bigint não é serializável em JSON). */
+function asBigInt(value: unknown): bigint | null {
+  if (typeof value === 'string' && /^-?\d+$/.test(value)) return BigInt(value)
+  if (typeof value === 'number' && Number.isInteger(value)) return BigInt(value)
+  return null
+}
+
 const BILLING_DOWNGRADE_REASONS = new Set<BillingDowngradedTemplatePayload['reason']>([
   'payment_failed',
   'canceled',
@@ -308,23 +321,80 @@ function buildEmailContent(parsed: NotifyJobData): NotificationTemplateOutput {
     }
   }
 
+  // ── Onda 8 — pool.* (docs/09 §9.6 "Bolão — ...") ──────────────────────────────────────
+  // Enfileirado por `apps/worker/src/jobs/pool-notify.ts` — ver o cabeçalho daquele arquivo
+  // para os 5 eventos e por que o `dedupeScope` do payload (usado por `buildDedupeKey`,
+  // abaixo) é a chave natural de cada um, não `lotterySlug`/`contestNumber` (bolão não tem
+  // essa noção, exceto `pool.prized`, que É de um concurso específico).
+
+  if (parsed.type === 'pool.member_joined') {
+    const memberName = asNonEmptyString(payload['memberName'])
+    const poolName = asNonEmptyString(payload['poolName'])
+    const shares = asPositiveInt(payload['shares'])
+    if (memberName !== null && poolName !== null && shares !== null) {
+      return poolPaymentPendingTemplate({ memberName, poolName, shares })
+    }
+  }
+
+  if (parsed.type === 'pool.payment_declared') {
+    const memberName = asNonEmptyString(payload['memberName'])
+    const poolName = asNonEmptyString(payload['poolName'])
+    if (memberName !== null && poolName !== null) {
+      return poolPaymentDeclaredTemplate({ memberName, poolName })
+    }
+  }
+
+  if (parsed.type === 'pool.payment_confirmed') {
+    const poolName = asNonEmptyString(payload['poolName'])
+    if (poolName !== null) {
+      return poolPaymentConfirmedTemplate({ poolName })
+    }
+  }
+
+  if (parsed.type === 'pool.receipt_attached') {
+    const poolName = asNonEmptyString(payload['poolName'])
+    if (poolName !== null) {
+      return poolBetPlacedTemplate({ poolName })
+    }
+  }
+
+  if (parsed.type === 'pool.prized') {
+    const poolName = asNonEmptyString(payload['poolName'])
+    const amountCents = asBigInt(payload['amountCents'])
+    if (poolName !== null && amountCents !== null) {
+      return poolPrizedTemplate({ poolName, memberShareText: centsToBRL(amountCents) })
+    }
+  }
+
   return renderPlainTemplate(parsed.title, parsed.body)
 }
 
 // ─── Idempotência (P4) ──────────────────────────────────────────────────────────
 
 /**
- * Chave determinística por (tipo, usuário, [modalidade, concurso], canal). Quando o
- * payload não traz `lotterySlug`/`contestNumber` (nem todo `type` tem essa noção), a chave
- * fica mais curta — ainda deduplica retries do MESMO job (mesmo `type`+`userId`+`channel`),
- * só não diferencia dois eventos distintos do mesmo tipo para o mesmo usuário no mesmo
- * instante (caso raro; documentado como limitação no cabeçalho do arquivo).
+ * Chave determinística por (tipo, usuário, [modalidade, concurso] OU [escopo genérico],
+ * canal). Quando o payload não traz `lotterySlug`/`contestNumber` (nem todo `type` tem essa
+ * noção), a chave fica mais curta — ainda deduplica retries do MESMO job (mesmo
+ * `type`+`userId`+`channel`), só não diferencia dois eventos distintos do mesmo tipo para o
+ * mesmo usuário no mesmo instante (caso raro; documentado como limitação no cabeçalho do
+ * arquivo).
+ *
+ * Onda 8 — `payload.dedupeScope`: campo genérico opcional (string livre), usado por eventos
+ * sem noção de concurso (`pool.member_joined`, `pool.payment_declared`,
+ * `pool.payment_confirmed`, `pool.receipt_attached` — ver `jobs/pool-notify.ts`). Um usuário
+ * pode ser dono/membro de VÁRIOS bolões ao mesmo tempo, então `type`+`userId`+`channel`
+ * sozinho colidiria entre dois eventos DIFERENTES do mesmo bolão-usuário (ex.: dois membros
+ * distintos entrando no mesmo bolão do mesmo dono) — `dedupeScope` carrega a chave natural do
+ * evento (ex.: `member:<poolMemberId>`) para diferenciá-los. Mudança aditiva: nenhum `type`
+ * anterior a esta tarefa seta este campo, então o `dedupeKey` de `bet.*`/`contest.*`/
+ * `billing.*` não muda.
  */
 function buildDedupeKey(parsed: NotifyJobData, channel: NotificationChannel): string {
   const payload = parsed.payload ?? {}
   const parts = [parsed.type, parsed.userId]
   if (typeof payload['lotterySlug'] === 'string') parts.push(payload['lotterySlug'] as string)
   if (typeof payload['contestNumber'] === 'number') parts.push(String(payload['contestNumber']))
+  if (typeof payload['dedupeScope'] === 'string') parts.push(payload['dedupeScope'] as string)
   parts.push(channel)
   return parts.join(':')
 }

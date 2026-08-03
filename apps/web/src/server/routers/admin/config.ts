@@ -14,7 +14,7 @@ import { TRPCError } from '@trpc/server'
 import { z } from 'zod'
 import Redis from 'ioredis'
 import { Queue } from 'bullmq'
-import { getLotteryConfig, type LotterySlug } from '@lotopro/core'
+import { getLotteryConfig, type LotteryConfig, type LotterySlug } from '@lotopro/core'
 import { Prisma, UserRole } from '@lotopro/db'
 import { router } from '@/server/trpc'
 import { lotterySlugSchema } from '@/server/lib/lottery-schema'
@@ -120,6 +120,67 @@ const contestSelectForReprocess = {
   prizes: { select: { tier: true, label: true, winnersCount: true, prizeCents: true } },
 } satisfies Prisma.ContestSelect
 
+// ─── BO-42 — validação das dezenas corrigidas contra a `LotteryConfig` da modalidade ────────
+//
+// Achado de auditoria (severidade média): `fixContest` gravava `input.numbers` direto, sem
+// checar universo/duplicidade/quantidade — dava para "corrigir" um concurso da Mega-Sena com
+// a dezena 61, ou com duas dezenas iguais, ou com 3 dezenas. Como o reprocessamento roda
+// LOGO DEPOIS (ver `fixContest` abaixo), um resultado inválido não só fica errado: ele
+// contamina `BetCheck` de toda aposta que cobre o concurso.
+//
+// `config.picksMin` NÃO é "quantidade sorteada" (é o mínimo que o APOSTADOR escolhe — que
+// diverge do nº de dezenas do RESULTADO em Lotomania: aposta-se 50, sorteiam-se 20; e em
+// Timemania: aposta-se 10, sorteiam-se 7). A quantidade sorteada de verdade é o maior `hits`
+// entre as faixas de premiação de `config.prizeTiers` — a faixa máxima SEMPRE corresponde ao
+// nº de dezenas/colunas sorteadas (Mega-Sena "Sena" = 6 acertos = 6 dezenas; Lotomania
+// "20 acertos" = 20; Loteca "14 acertos" = 14 jogos; Super Sete "7 colunas" = 7). Dado que já
+// existe em `LotteryConfig` — nenhuma regra de modalidade reimplementada, nenhum
+// `if (slug === ...)`.
+function drawnQuantity(config: LotteryConfig): number {
+  return config.prizeTiers.reduce((max, tier) => Math.max(max, tier.hits), 0)
+}
+
+/**
+ * Valida um array de dezenas sorteadas (resultado de concurso) contra a config da
+ * modalidade. `label` identifica o campo na mensagem de erro (`numbers` vs.
+ * `secondaryNumbers`, Dupla Sena). Duplicidade só é erro em `PICK_N` — em `COLUMNS`/
+ * `MATCH_LIST` (Super Sete, Loteca) o MESMO valor se repetir em colunas/jogos diferentes é
+ * normal (ex.: dois jogos empatados), mesma distinção de `format` que `@lotopro/core`'s
+ * `validateBet` já usa (nunca um `if (slug === ...)`).
+ */
+function assertValidDrawnNumbers(config: LotteryConfig, label: string, numbers: readonly number[]): void {
+  const outOfUniverse = numbers.filter((value) => value < config.universeMin || value > config.universeMax)
+  if (outOfUniverse.length > 0) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: `${label}: dezenas fora do universo ${config.universeMin}–${config.universeMax} de ${config.name}: ${outOfUniverse.join(', ')}.`,
+    })
+  }
+
+  if (config.format === 'PICK_N') {
+    const seen = new Set<number>()
+    const duplicated = new Set<number>()
+    for (const value of numbers) {
+      if (seen.has(value)) duplicated.add(value)
+      seen.add(value)
+    }
+    if (duplicated.size > 0) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: `${label}: dezenas repetidas: ${[...duplicated].sort((a, b) => a - b).join(', ')}.`,
+      })
+    }
+  }
+
+  const expected = drawnQuantity(config)
+  if (expected > 0 && numbers.length !== expected) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: `${label}: ${config.name} sorteia exatamente ${expected} dezenas; foram informadas ${numbers.length}.`,
+    })
+  }
+}
+
 export const adminConfigRouter = router({
   lotteries: router({
     /**
@@ -162,6 +223,8 @@ export const adminConfigRouter = router({
         entityId: existing.id,
         before: { isActive: existing.isActive, displayOrder: existing.displayOrder, colorToken: existing.colorToken },
         after: { isActive: updated.isActive, displayOrder: updated.displayOrder, colorToken: updated.colorToken },
+        ip: ctx.ip,
+        userAgent: ctx.userAgent,
       })
 
       return updated
@@ -188,14 +251,19 @@ export const adminConfigRouter = router({
       entityType: 'Lottery',
       entityId: lottery.id,
       after: { lotterySlug: input.lotterySlug, jobId: jobId ?? null },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
     })
 
     return { queued: true as const, lotterySlug: input.lotterySlug, jobId }
   }),
 
   /**
-   * BO-42 — correção manual de dezenas de um concurso. Grava `AuditLog` (obrigatório) e, na
-   * sequência, JÁ DISPARA o reprocessamento (`reprocessContestScope`, o mesmo helper de
+   * BO-42 — correção manual de dezenas de um concurso. Valida `numbers`/`secondaryNumbers`
+   * contra a `LotteryConfig` da modalidade ANTES de gravar (universo, duplicidade, quantidade
+   * sorteada — `assertValidDrawnNumbers` acima; achado de auditoria, severidade média: antes
+   * disto o endpoint aceitava qualquer array). Grava `AuditLog` (obrigatório) e, na sequência,
+   * JÁ DISPARA o reprocessamento (`reprocessContestScope`, o mesmo helper de
    * `admin.bets.reprocessChecks`) — a UI deve avisar isso claramente antes de confirmar
    * (dezenas erradas geram `BetCheck` errados; a correção só faz sentido reconferindo).
    */
@@ -206,6 +274,12 @@ export const adminConfigRouter = router({
       select: { ...contestSelectForReprocess, lotteryId: true, lottery: { select: { slug: true } } },
     })
     if (!existing) throw new TRPCError({ code: 'NOT_FOUND', message: 'Concurso não encontrado.' })
+
+    const config = getLotteryConfig(existing.lottery.slug as LotterySlug)
+    assertValidDrawnNumbers(config, 'Dezenas sorteadas', input.numbers)
+    if (input.secondaryNumbers !== undefined) {
+      assertValidDrawnNumbers(config, 'Dezenas do 2º sorteio (Dupla Sena)', input.secondaryNumbers)
+    }
 
     const updated = await ctx.prisma.contest.update({
       where: { id: existing.id },
@@ -233,9 +307,10 @@ export const adminConfigRouter = router({
         numbersDrawOrder: updated.numbersDrawOrder,
         secondaryNumbers: updated.secondaryNumbers,
       },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
     })
 
-    const config = getLotteryConfig(existing.lottery.slug as LotterySlug)
     const prisma = createAdminReprocessPrismaAdapter(ctx.prisma)
     const contestRow: ContestRow = updated
     const reprocessed = await reprocessContestScope(prisma, existing.lotteryId, contestRow, config)

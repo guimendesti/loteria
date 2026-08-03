@@ -1,13 +1,35 @@
 'use client'
 
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
-import { useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { Suspense, useState } from 'react'
 import { authClient } from '@/lib/auth-client'
+import { sanitizeCallbackURL } from '@/lib/safe-redirect'
 
-/** AU-02 (login e-mail+senha) e AU-03 (login social Google). */
+/**
+ * AU-02 (login e-mail+senha) e AU-03 (login social Google).
+ *
+ * `?callbackURL=` (Onda 8) preserva para onde voltar depois de autenticar — hoje usado pelo
+ * convite público de bolão (`/j/[inviteCode]`, botão "Entrar para participar"), mas serve
+ * qualquer chamador. Mesmo nome de parâmetro que `authClient.signIn.social` já usa (padrão
+ * do Better Auth já empregado neste projeto), para não introduzir uma segunda convenção.
+ * `useSearchParams()` exige um limite de Suspense (Next.js) — ver `RecuperarPage`, mesmo
+ * padrão já usado em `app/(auth)/recuperar/page.tsx`.
+ */
 export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginForm />
+    </Suspense>
+  )
+}
+
+function LoginForm() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const callbackURL = sanitizeCallbackURL(searchParams.get('callbackURL')) ?? '/app'
+  const cadastroHref = callbackURL === '/app' ? '/cadastro' : `/cadastro?callbackURL=${encodeURIComponent(callbackURL)}`
+
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -30,11 +52,11 @@ export default function LoginPage() {
       return
     }
 
-    router.push('/app')
+    router.push(callbackURL)
   }
 
   async function handleGoogleSignIn() {
-    await authClient.signIn.social({ provider: 'google', callbackURL: '/app' })
+    await authClient.signIn.social({ provider: 'google', callbackURL })
   }
 
   return (
@@ -42,7 +64,7 @@ export default function LoginPage() {
       <h1 className="font-display text-2xl font-bold text-ink-900">Entrar</h1>
       <p className="mt-1 text-sm text-ink-600">
         Ainda não tem conta?{' '}
-        <Link href="/cadastro" className="font-semibold text-brand-700 hover:underline">
+        <Link href={cadastroHref} className="font-semibold text-brand-700 hover:underline">
           Cadastre-se grátis
         </Link>
       </p>

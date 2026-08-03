@@ -7,6 +7,7 @@ import { billingRouter } from '@/server/routers/billing'
 import { walletRouter } from '@/server/routers/wallet'
 import { accountRouter } from '@/server/routers/account'
 import { pushRouter } from '@/server/routers/push'
+import { poolRouter } from '@/server/routers/pool'
 import { adminDashboardRouter } from '@/server/routers/admin/dashboard'
 import { adminUsersRouter } from '@/server/routers/admin/users'
 import { adminBetsRouter } from '@/server/routers/admin/bets'
@@ -23,6 +24,9 @@ export const appRouter = router({
   wallet: walletRouter,
   account: accountRouter,
   push: pushRouter,
+  // Bolão Manager (Épico 10). Todo Pix aqui é P2P entre pessoas físicas —
+  // o LotoPro monta o código e nunca custodia o valor (docs/03).
+  pool: poolRouter,
   // Backoffice — todo procedure aqui passa por `adminProcedure(minRole)`
   // (server/lib/admin/rbac.ts) e grava auditoria nas mutations.
   admin: router({

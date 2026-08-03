@@ -165,7 +165,6 @@ export interface AdminReprocessPrisma {
     findMany(args: {
       where: {
         lotteryId: string
-        isActive: boolean
         contestFrom: { lte: number }
         contestTo: { gte: number }
         id?: { gt: string }
@@ -221,11 +220,23 @@ export interface ReprocessSummary {
 
 /**
  * BO-21 — escopo "concurso": apaga TODOS os `BetCheck` daquele concurso e refaz a
- * conferência para as apostas atualmente ATIVAS que cobrem esse concurso (mesmo filtro de
- * `apps/worker/src/jobs/check-bets.ts`: `isActive && contestFrom <= N <= contestTo`).
- * Idempotente por construção — deletar e recriar duas vezes seguidas produz o mesmo estado
- * final. Usada por `reprocessChecks` (input `{lotterySlug, contestNumber}`) e por
- * `admin.config.fixContest` (após corrigir as dezenas de um concurso).
+ * conferência para TODAS as apostas que cobrem esse concurso — ativas OU arquivadas
+ * (`Bet.isActive`, arquivamento manual do usuário, CL-16; ≠ `deletedAt`, a lixeira de
+ * verdade). Idempotente por construção — deletar e recriar duas vezes seguidas produz o
+ * mesmo estado final. Usada por `reprocessChecks` (input `{lotterySlug, contestNumber}`) e
+ * por `admin.config.fixContest` (após corrigir as dezenas de um concurso).
+ *
+ * ⚠️ CORREÇÃO DE SEGURANÇA (achado de auditoria, severidade média): a versão anterior
+ * filtrava `isActive: true` só do lado da RECRIAÇÃO (mesmo filtro de
+ * `apps/worker/src/jobs/check-bets.ts`, que faz sentido para o sync automático — não vale a
+ * pena reconferir apostas arquivadas a cada resultado novo), mas o DELETE acima nunca teve
+ * esse filtro (apaga por `contestId`, sem olhar a aposta dona) — apagava o `BetCheck` de uma
+ * aposta arquivada e nunca recriava, fazendo a conferência sumir silenciosamente. Esta
+ * ferramenta é diferente do sync automático: BO-21/BO-42 são CORREÇÃO manual (bug de
+ * conferência corrigido, ou concurso corrigido) — o objetivo é que TODA aposta afetada saia
+ * com dado correto, arquivada ou não. Por isso os dois lados usam agora o MESMO critério
+ * (nenhum filtro de `isActive`); ver `admin-reprocess.test.ts` para o teste de regressão que
+ * prova a simetria.
  */
 export async function reprocessContestScope(
   prisma: AdminReprocessPrisma,
@@ -246,7 +257,6 @@ export async function reprocessContestScope(
     const batch = await prisma.bet.findMany({
       where: {
         lotteryId,
-        isActive: true,
         contestFrom: { lte: contest.number },
         contestTo: { gte: contest.number },
         ...(cursorId !== undefined ? { id: { gt: cursorId } } : {}),
@@ -471,6 +481,8 @@ export const adminBetsRouter = router({
           recreatedChecks: summary.recreatedChecks,
           contestsProcessed: summary.processedBets,
         },
+        ip: ctx.ip,
+        userAgent: ctx.userAgent,
       })
 
       return { scope: 'bet' as const, betId: bet.id, ...summary }
@@ -508,6 +520,8 @@ export const adminBetsRouter = router({
         processedBets: summary.processedBets,
         prizedBets: summary.prizedBets,
       },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
     })
 
     return {

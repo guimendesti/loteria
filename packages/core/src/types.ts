@@ -197,3 +197,47 @@ export interface PayoutResult {
   /** Invariante: soma(shares.amountCents) + remainderCents === prêmio total */
   totalCents: bigint
 }
+
+// ─── Bolão: cotas e Pix (Onda 8) ─────────────────────────────────────────────
+
+/**
+ * ⚠️ REGRA JURÍDICA (docs/03, CLAUDE.md): o LotoPro NUNCA custodia valor de bolão.
+ * O payload Pix abaixo aponta SEMPRE para a chave do ORGANIZADOR — é uma
+ * transferência P2P entre pessoas físicas que não passa por nós. Nada aqui
+ * representa saldo, conta ou intermediação.
+ */
+
+export type PixKeyKind = 'CPF' | 'CNPJ' | 'EMAIL' | 'PHONE' | 'RANDOM'
+
+export interface PixPayloadInput {
+  /** Chave do organizador (recebedor). Nunca do LotoPro. */
+  key: string
+  keyKind: PixKeyKind
+  /** Nome do recebedor (máx. 25 chars no padrão EMV) */
+  merchantName: string
+  /** Cidade do recebedor (máx. 15 chars) */
+  merchantCity: string
+  amountCents: bigint
+  /** Identificador da transação: alfanumérico, máx. 25 chars. */
+  txid: string
+}
+
+export interface PixPayload {
+  /** String EMV completa (copia-e-cola), já com CRC16 calculado. */
+  emv: string
+  txid: string
+  amountCents: bigint
+}
+
+/** Cálculo de cotas de um bolão — puro, sem I/O. */
+export interface ShareMath {
+  totalCostCents: bigint
+  totalShares: number
+  /** Valor unitário da cota (arredondado PARA CIMA, para nunca faltar dinheiro). */
+  shareValueCents: bigint
+  /**
+   * Sobra que o arredondamento gera (shareValue × totalShares − custo).
+   * Fica com o organizador e é exibida explicitamente na UI.
+   */
+  surplusCents: bigint
+}

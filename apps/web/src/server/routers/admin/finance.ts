@@ -310,6 +310,8 @@ export const adminFinanceRouter = router({
       entityId: invoice.id,
       before: { status: invoice.status, failureReason: invoice.failureReason, attempts: invoice.attempts },
       after: { status: updated.status },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
     })
 
     return updated
@@ -408,6 +410,8 @@ export const adminFinanceRouter = router({
       entityId: event.id,
       before: { outcome: 'requested' },
       after: { outcome: result.outcome, message: result.message },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
     })
 
     return result

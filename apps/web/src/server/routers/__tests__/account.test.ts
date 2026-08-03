@@ -57,6 +57,10 @@ function buildContext(prismaStubs: Record<string, unknown>): Context {
       session: { id: 'session-1', token: 'tok', userId: SESSION_USER_ID },
     } as unknown as Context['session'],
     getEntitlements: () => Promise.resolve(getEntitlements('premium')),
+    // `ip`/`userAgent` (server/trpc.ts) — sempre presentes no contexto real (extraídos dos
+    // headers da requisição), `null` aqui porque nenhum teste deste arquivo os usa.
+    ip: null,
+    userAgent: null,
   }
 }
 
@@ -355,6 +359,8 @@ describe('account.deleteAccount — anonimiza sem deletar linhas (LGPD)', () => 
         image: null,
         pixKeyEncrypted: null,
         pixKeyType: null,
+        passwordHash: null,
+        role: 'CUSTOMER',
         deletedAt: result.deletedAt,
       },
     })
@@ -378,5 +384,35 @@ describe('account.deleteAccount — anonimiza sem deletar linhas (LGPD)', () => 
       'ACCOUNT_DELETE_OP',
       'SESSION_DELETE_OP',
     ])
+  })
+
+  /**
+   * ★ Regressão de segurança (achado de auditoria, severidade média): antes desta correção,
+   * `passwordHash`/`role` não eram tocados por `deleteAccount` — uma conta ADMIN "excluída"
+   * continuava com `role: 'ADMIN'` gravado para sempre (a credencial de login em
+   * `Account.password` já era apagada, mas o papel administrativo sobrevivia na linha do
+   * `User`). Este teste prova que uma auto-exclusão SEMPRE rebaixa para CUSTOMER e limpa o
+   * `passwordHash` legado, não importa o papel de quem chamou.
+   */
+  it('rebaixa role para CUSTOMER e limpa passwordHash mesmo quando quem exclui é ADMIN (defesa em profundidade)', async () => {
+    const findUniqueOrThrow = vi.fn().mockResolvedValue({ deletedAt: null })
+    const userUpdate = vi.fn().mockReturnValue('USER_UPDATE_OP')
+    const transaction = vi.fn(async (ops: unknown[]) => ops)
+
+    const ctx = buildContext({
+      user: { findUniqueOrThrow, update: userUpdate },
+      notificationPreference: { updateMany: vi.fn() },
+      account: { deleteMany: vi.fn() },
+      session: { deleteMany: vi.fn() },
+      $transaction: transaction,
+    })
+    ;(ctx.session as unknown as { user: { role: string } }).user.role = 'ADMIN'
+    const caller = createCaller(ctx)
+
+    await caller.deleteAccount({ confirmation: DELETE_ACCOUNT_CONFIRMATION_PHRASE })
+
+    const savedData = (userUpdate.mock.calls[0]?.[0] as { data: { passwordHash: string | null; role: string } }).data
+    expect(savedData.passwordHash).toBeNull()
+    expect(savedData.role).toBe('CUSTOMER')
   })
 })

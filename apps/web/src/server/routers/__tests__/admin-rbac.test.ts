@@ -14,7 +14,9 @@
 import { describe, expect, it } from 'vitest'
 import { TRPCError } from '@trpc/server'
 import {
+  ADMIN_NAV_SECTIONS,
   ADMIN_ROLES,
+  canAccessNavSection,
   getAdminRole,
   hasPermission,
   requirePermission,
@@ -215,5 +217,59 @@ describe('separação SUPPORT × FINANCE nas permissões de território (regress
     const supportCtx = ctxFor('SUPPORT')
     expect(requireRole(supportCtx, 'FINANCE')).toBe('SUPPORT')
     expect(() => requirePermission(supportCtx, 'billing:write')).toThrowError(TRPCError)
+  })
+})
+
+/**
+ * `AdminNav` (achado de auditoria, severidade média): o menu do backoffice mostrava TODAS
+ * as 6 seções para qualquer papel, mesmo as que levariam 403 ao abrir. Estes testes provam
+ * que `canAccessNavSection` reflete EXATAMENTE o gate que cada router de `admin/*.ts` já
+ * aplica na query principal da seção — nenhuma seção aparece para um papel que o servidor
+ * recusaria, e nenhuma seção que o servidor permite fica escondida sem motivo.
+ */
+describe('ADMIN_NAV_SECTIONS / canAccessNavSection — navegação reflete o mesmo gate do servidor', () => {
+  function sectionsFor(role: AdminRole): string[] {
+    return ADMIN_NAV_SECTIONS.filter((section) => canAccessNavSection(role, section)).map((section) => section.href)
+  }
+
+  it('VIEWER vê só as seções de leitura aberta (Dashboard, Usuários, Apostas, Configurações) — nunca Financeiro/Suporte', () => {
+    expect(sectionsFor('VIEWER')).toEqual(['/admin', '/admin/usuarios', '/admin/apostas', '/admin/config'])
+  })
+
+  it('SUPPORT vê Suporte mas NÃO Financeiro (não tem billing:read)', () => {
+    const sections = sectionsFor('SUPPORT')
+    expect(sections).toContain('/admin/suporte')
+    expect(sections).not.toContain('/admin/financeiro')
+  })
+
+  it('FINANCE vê Financeiro mas NÃO Suporte (não tem support:read) — o exemplo concreto do achado', () => {
+    const sections = sectionsFor('FINANCE')
+    expect(sections).toContain('/admin/financeiro')
+    expect(sections).not.toContain('/admin/suporte')
+  })
+
+  it('★ o rank sozinho NÃO explicaria a diferença: SUPPORT passa no gate GROSSO de Financeiro, só a permissão fina barra', () => {
+    // `requireRole(ctx, 'FINANCE')` aceita um ator SUPPORT (mesmo rank — ver
+    // `admin-rbac.test.ts` acima, "SUPPORT e FINANCE dividem o mesmo rank"). Se
+    // `canAccessNavSection` checasse só `minRole`, a seção Financeiro apareceria para
+    // SUPPORT também. Os testes acima já provam que não aparece — a causa é a permissão
+    // fina (`billing:read`), que este teste isola.
+    const financeiro = ADMIN_NAV_SECTIONS.find((section) => section.href === '/admin/financeiro')
+    expect(financeiro).toBeDefined()
+    const section = financeiro!
+    expect(section.minRole).toBe('FINANCE')
+    expect(requireRole(ctxFor('SUPPORT'), section.minRole)).toBe('SUPPORT') // gate grosso passa
+    expect(section.permission).toBeDefined()
+    expect(hasPermission('SUPPORT', section.permission!)).toBe(false) // gate fino barra
+  })
+
+  it('ADMIN vê as 6 seções', () => {
+    expect(sectionsFor('ADMIN')).toHaveLength(ADMIN_NAV_SECTIONS.length)
+  })
+
+  it('nenhum papel de backoffice fica com navegação vazia', () => {
+    for (const role of ADMIN_ROLES) {
+      expect(sectionsFor(role).length).toBeGreaterThan(0)
+    }
   })
 })

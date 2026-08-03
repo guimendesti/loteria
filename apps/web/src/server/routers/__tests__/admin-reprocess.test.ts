@@ -58,11 +58,14 @@ function createFakeDb() {
         ),
     },
     bet: {
+      // Sem filtro de `isActive` de propósito — mesmo critério do `betCheck.deleteMany`
+      // abaixo (por `contestId`, também sem olhar a aposta dona). Ver docblock de
+      // `reprocessContestScope` em `admin/bets.ts`: apostas arquivadas PRECISAM ser
+      // reprocessadas aqui, senão o `deleteMany` some com o `BetCheck` delas para sempre.
       findMany: async ({ where, take }) => {
         const filtered = bets.filter(
           (bet) =>
             bet.lotteryId === where.lotteryId &&
-            bet.isActive === where.isActive &&
             bet.contestFrom <= where.contestFrom.lte &&
             bet.contestTo >= where.contestTo.gte &&
             (where.id === undefined || bet.id > where.id.gt),
@@ -171,12 +174,15 @@ describe('admin.bets.reprocessChecks (BO-21) — idempotência', () => {
     expect(db.betChecks.get('bet-0003:contest-2900:1')).toMatchObject({ hits: 0, prizeTier: null, prizeCents: 0n })
   })
 
-  it('reprocessContestScope: apaga BetCheck órfão de aposta que não está mais ativa', async () => {
+  it('reprocessContestScope: apaga BetCheck verdadeiramente órfão (bet_id sem linha em `bet`) e não o recria', async () => {
     const config = getLotteryConfig('megasena')
     const db = createFakeDb()
     const contest = seedContest(db, 'contest-2900', 2900, [1, 2, 3, 4, 5, 6])
     db.bets.push(betRow('bet-0001', [1, 2, 3, 4, 5, 6]))
-    // Sujeira de uma rodada anterior — aposta que foi arquivada depois de conferida.
+    // `bet-9999` NÃO existe em `db.bets` — dado inconsistente (ex.: aposta removida por
+    // fora da aplicação). Único caso legítimo de "sumiço": não há como recriar o que não
+    // existe mais. Isto é DIFERENTE de uma aposta arquivada (isActive:false), que CONTINUA
+    // existindo e cujo BetCheck deve ser recriado — ver os dois testes de simetria abaixo.
     db.betChecks.set('bet-9999:contest-2900:1', {
       betId: 'bet-9999',
       contestId: 'contest-2900',
@@ -194,6 +200,65 @@ describe('admin.bets.reprocessChecks (BO-21) — idempotência', () => {
     expect(summary.deletedChecks).toBe(1) // só o órfão existia antes desta rodada
     expect(db.betChecks.has('bet-9999:contest-2900:1')).toBe(false)
     expect(db.betChecks.has('bet-0001:contest-2900:1')).toBe(true)
+  })
+
+  /**
+   * ★ Regressão de segurança (achado de auditoria, severidade média): a versão anterior
+   * apagava o `BetCheck` de TODA aposta que cobria o concurso (delete por `contestId`, sem
+   * olhar `isActive`), mas só RECRIAVA para apostas ativas (`isActive: true` no `findMany`).
+   * Resultado: reprocessar um concurso fazia a conferência de qualquer aposta arquivada
+   * simplesmente desaparecer. Este teste prova que hoje o critério é o MESMO dos dois lados
+   * — nenhuma aposta (ativa ou arquivada) perde `BetCheck` ao reprocessar.
+   */
+  it('reprocessContestScope: apostas ARQUIVADAS (isActive:false) são reconferidas, não perdem BetCheck (simetria delete/recria)', async () => {
+    const config = getLotteryConfig('megasena')
+    const db = createFakeDb()
+    const contest = seedContest(db, 'contest-2900', 2900, [1, 2, 3, 4, 5, 6])
+    db.bets.push(
+      betRow('bet-ativa', [1, 2, 3, 4, 5, 6], { isActive: true }), // 6 acertos — Sena
+      betRow('bet-arquivada', [1, 2, 3, 4, 5, 10], { isActive: false }), // 5 acertos — Quina
+    )
+    // Sujeira de uma rodada anterior — a aposta arquivada já tinha sido conferida antes de
+    // ser arquivada pelo usuário.
+    db.betChecks.set('bet-arquivada:contest-2900:1', {
+      betId: 'bet-arquivada',
+      contestId: 'contest-2900',
+      drawIndex: 1,
+      hits: 5,
+      hitNumbers: [1, 2, 3, 4, 5],
+      extraHits: null,
+      prizeTier: 2,
+      prizeCents: 5_000n,
+      tierCounts: [],
+    })
+
+    const summary = await reprocessContestScope(db.prisma, LOTTERY_ID, contest, config)
+
+    // As DUAS apostas foram reprocessadas — nenhuma ficou de fora por causa de `isActive`.
+    expect(summary.processedBets).toBe(2)
+    expect(db.betChecks.has('bet-ativa:contest-2900:1')).toBe(true)
+    expect(db.betChecks.has('bet-arquivada:contest-2900:1')).toBe(true)
+    expect(db.betChecks.get('bet-arquivada:contest-2900:1')).toMatchObject({ hits: 5, prizeTier: 2, prizeCents: 5_000n })
+  })
+
+  it('reprocessContestScope: reprocessar duas vezes com apostas ativas E arquivadas produz o mesmo estado final (idempotência simétrica)', async () => {
+    const config = getLotteryConfig('megasena')
+    const db = createFakeDb()
+    const contest = seedContest(db, 'contest-2900', 2900, [1, 2, 3, 4, 5, 6])
+    db.bets.push(
+      betRow('bet-ativa', [1, 2, 3, 4, 5, 6], { isActive: true }),
+      betRow('bet-arquivada', [10, 20, 30, 40, 50, 60], { isActive: false }),
+    )
+
+    const first = await reprocessContestScope(db.prisma, LOTTERY_ID, contest, config)
+    expect(first).toEqual({ deletedChecks: 0, recreatedChecks: 2, processedBets: 2, prizedBets: 1 })
+    const snapshotAfterFirst = new Map(db.betChecks)
+
+    const second = await reprocessContestScope(db.prisma, LOTTERY_ID, contest, config)
+    expect(second).toEqual({ deletedChecks: 2, recreatedChecks: 2, processedBets: 2, prizedBets: 1 })
+
+    expect([...db.betChecks.entries()]).toEqual([...snapshotAfterFirst.entries()])
+    expect(db.betChecks.has('bet-arquivada:contest-2900:1')).toBe(true)
   })
 
   it('reprocessBetScope: reprocessar a mesma aposta (multi-concurso) duas vezes produz o mesmo estado final', async () => {

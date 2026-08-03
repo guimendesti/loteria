@@ -234,6 +234,8 @@ Regras: máximo 60 caracteres no título; sem promessa; sem urgência artificial
 | Acumulado | Mega-Sena acumulou R$ 120 milhões | Próximo sorteio: quinta-feira, 21h. |
 | Fechamento | Faltam 2h para o encerramento | Você ainda não tem jogo no concurso 3041 da Lotofácil. |
 | Bolão — pagamento | João entrou no bolão "Escritório" | 2 cotas · aguardando pagamento. |
+| Bolão — pagamento declarado | João declarou pagamento no bolão "Escritório" | Confirme o recebimento para liberar a cota. |
+| Bolão — pagamento confirmado | Pagamento confirmado no bolão "Escritório" | Você já está garantido nessa aposta. |
 | Bolão — apostado | Bolão "Escritório" apostado ✅ | O comprovante já está disponível para todos. |
 | Bolão — premiado | 🎉 O bolão "Escritório" foi premiado! | Sua parte: R$ 340,00. Veja o rateio. |
 | Cobrança falhou | Não conseguimos renovar sua assinatura | Atualize seu meio de pagamento para continuar no Premium. |

@@ -1,40 +1,42 @@
 'use client'
 
 /**
- * Navegação do backoffice (docs/08 Parte D). Os 4 últimos itens (Apostas, Financeiro,
- * Configurações, Suporte) são território de outro agente nesta onda (ORQUESTRACAO.md,
- * Onda 7 · admin-ops) — os links já existem aqui porque a navegação é UM componente só,
- * mas as páginas podem devolver 404 até esse agente entregar as dele. Isso é esperado
- * (instrução explícita da tarefa), não um bug desta tela.
+ * Navegação do backoffice (docs/08 Parte D). Achado de auditoria (severidade média): a
+ * versão anterior mostrava TODAS as 6 seções para qualquer admin, mesmo as que o papel dele
+ * levaria 403 ao abrir (ex.: "Financeiro" para um agente de SUPORTE) — vaza a topologia do
+ * backoffice para quem não pode usá-la. A REGRA de quem vê o quê mora só em
+ * `server/lib/admin/rbac.ts` (`ADMIN_NAV_SECTIONS`/`canAccessNavSection`, o MESMO
+ * rank/permissão que cada router de `admin/*` já exige) — este componente nunca a
+ * reimplementa nem a importa em tempo de execução (aquele módulo carrega `@trpc/server`/
+ * Prisma, inseguros no bundle do cliente). `(admin)/layout.tsx` (server component) já
+ * filtra e passa só os itens permitidos aqui; `AdminNavItem` é `import type` (apagado na
+ * compilação, mesmo padrão de `AdminRoleContext.tsx`).
+ *
+ * As ROTAS continuam protegidas no servidor independentemente disto — esconder um item do
+ * menu é só UX (evita o clique morto), nunca a fonte da verdade (CLAUDE.md "Convenções").
  */
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import type { AdminNavSection } from '@/server/lib/admin/rbac'
 
-interface NavItem {
-  href: string
-  label: string
-}
-
-const NAV_ITEMS: NavItem[] = [
-  { href: '/admin', label: 'Dashboard' },
-  { href: '/admin/usuarios', label: 'Usuários' },
-  { href: '/admin/apostas', label: 'Apostas' },
-  { href: '/admin/financeiro', label: 'Financeiro' },
-  { href: '/admin/config', label: 'Configurações' },
-  { href: '/admin/suporte', label: 'Suporte' },
-]
+export type AdminNavItem = Pick<AdminNavSection, 'href' | 'label'>
 
 function isActive(pathname: string, href: string): boolean {
   if (href === '/admin') return pathname === '/admin'
   return pathname === href || pathname.startsWith(`${href}/`)
 }
 
-export function AdminNav() {
+export function AdminNav({ items }: { items: readonly AdminNavItem[] }) {
   const pathname = usePathname()
+
+  // Papel sem NENHUMA seção acessível (hoje nunca acontece — os 4 papéis de backoffice têm
+  // ao menos "Dashboard" — mas um papel futuro com zero permissões não deveria renderizar
+  // um <nav> vazio, ver docblock acima).
+  if (items.length === 0) return null
 
   return (
     <nav aria-label="Navegação do backoffice" className="mt-8 flex flex-col gap-1">
-      {NAV_ITEMS.map((item) => {
+      {items.map((item) => {
         const active = isActive(pathname, item.href)
         return (
           <Link

@@ -136,3 +136,19 @@ export interface PoolPrizedTemplatePayload {
   /** Já formatado (ex.: "R$ 340,00") — o cálculo do rateio é de `@lotopro/core/pool`. */
   memberShareText: string
 }
+
+/**
+ * Onda 8 — `pool-notify` (apps/worker/src/jobs/pool-notify.ts). Sem linha própria em
+ * docs/09 §9.6 (só "Bolão — pagamento"/"apostado"/"premiado" existiam antes desta tarefa);
+ * texto autoral novo, mesmo tom das linhas vizinhas (sem promessa, sem urgência artificial,
+ * título ≤60 caracteres) — ver `poolPaymentDeclaredTemplate` em `templates.ts`.
+ */
+export interface PoolPaymentDeclaredTemplatePayload {
+  memberName: string
+  poolName: string
+}
+
+/** Onda 8 — mesma nota de `PoolPaymentDeclaredTemplatePayload` acima. */
+export interface PoolPaymentConfirmedTemplatePayload {
+  poolName: string
+}

@@ -491,6 +491,194 @@ describe('createNotifyJob — templates de billing (P4b)', () => {
   })
 })
 
+describe('createNotifyJob — templates de bolão (Onda 8, pool-notify.ts)', () => {
+  it('pool.member_joined: e-mail usa o texto EXATO de docs/09 §9.6 ("Bolão — pagamento")', async () => {
+    const db = createFakeDb()
+    db.users.set(USER_ID, { id: USER_ID, email: 'owner@example.com' })
+    const email = fakeEmailSender()
+    const job = createNotifyJob({ prisma: db.prisma, emailSender: email, pushSender: fakePushSender({ ok: false }) })
+
+    await job(
+      baseJob({
+        type: 'pool.member_joined',
+        title: 'texto inline do job — não deve aparecer no e-mail',
+        body: 'texto inline do job',
+        payload: { poolId: 'pool-1', poolName: 'Escritório', poolMemberId: 'member-1', memberName: 'João', shares: 2 },
+      }),
+    )
+
+    expect(email.sent).toHaveLength(1)
+    expect(email.sent[0]?.subject).toBe('João entrou no bolão "Escritório"')
+    expect(email.sent[0]?.text).toBe('2 cotas · aguardando pagamento.')
+  })
+
+  it('pool.payment_declared: e-mail usa o template dedicado', async () => {
+    const db = createFakeDb()
+    db.users.set(USER_ID, { id: USER_ID, email: 'owner@example.com' })
+    const email = fakeEmailSender()
+    const job = createNotifyJob({ prisma: db.prisma, emailSender: email, pushSender: fakePushSender({ ok: false }) })
+
+    await job(
+      baseJob({
+        type: 'pool.payment_declared',
+        title: 'inline',
+        body: 'inline',
+        payload: { poolId: 'pool-1', poolName: 'Escritório', memberName: 'João', amountCents: '5000' },
+      }),
+    )
+
+    expect(email.sent[0]?.subject).toBe('João declarou pagamento no bolão "Escritório"')
+    expect(email.sent[0]?.text).toBe('Confirme o recebimento para liberar a cota.')
+  })
+
+  it('pool.payment_confirmed: e-mail usa o template dedicado', async () => {
+    const db = createFakeDb()
+    db.users.set(USER_ID, { id: USER_ID, email: 'membro@example.com' })
+    const email = fakeEmailSender()
+    const job = createNotifyJob({ prisma: db.prisma, emailSender: email, pushSender: fakePushSender({ ok: false }) })
+
+    await job(
+      baseJob({
+        type: 'pool.payment_confirmed',
+        title: 'inline',
+        body: 'inline',
+        payload: { poolId: 'pool-1', poolName: 'Escritório', amountCents: '5000' },
+      }),
+    )
+
+    expect(email.sent[0]?.subject).toBe('Pagamento confirmado no bolão "Escritório"')
+    expect(email.sent[0]?.text).toBe('Você já está garantido nessa aposta.')
+  })
+
+  it('pool.receipt_attached: e-mail usa o texto EXATO de docs/09 §9.6 ("Bolão — apostado")', async () => {
+    const db = createFakeDb()
+    db.users.set(USER_ID, { id: USER_ID, email: 'membro@example.com' })
+    const email = fakeEmailSender()
+    const job = createNotifyJob({ prisma: db.prisma, emailSender: email, pushSender: fakePushSender({ ok: false }) })
+
+    await job(
+      baseJob({
+        type: 'pool.receipt_attached',
+        title: 'inline',
+        body: 'inline',
+        payload: { poolId: 'pool-1', poolName: 'Escritório' },
+      }),
+    )
+
+    expect(email.sent[0]?.subject).toBe('Bolão "Escritório" apostado ✅')
+    expect(email.sent[0]?.text).toBe('O comprovante já está disponível para todos.')
+  })
+
+  it('pool.prized: e-mail usa o texto EXATO de docs/09 §9.6 ("Bolão — premiado")', async () => {
+    const db = createFakeDb()
+    db.users.set(USER_ID, { id: USER_ID, email: 'membro@example.com' })
+    const email = fakeEmailSender()
+    const job = createNotifyJob({ prisma: db.prisma, emailSender: email, pushSender: fakePushSender({ ok: false }) })
+
+    await job(
+      baseJob({
+        type: 'pool.prized',
+        title: 'inline',
+        body: 'inline',
+        payload: { poolId: 'pool-1', poolName: 'Escritório', contestNumber: 2900, amountCents: '34000' },
+      }),
+    )
+
+    expect(email.sent[0]?.subject).toBe('🎉 O bolão "Escritório" foi premiado!')
+    expect(email.sent[0]?.text).toBe('Sua parte: R$ 340,00. Veja o rateio.')
+  })
+
+  it('payload sem os campos exigidos cai no fallback title/body (mesma regra de billing.*)', async () => {
+    const db = createFakeDb()
+    db.users.set(USER_ID, { id: USER_ID, email: 'membro@example.com' })
+    const email = fakeEmailSender()
+    const job = createNotifyJob({ prisma: db.prisma, emailSender: email, pushSender: fakePushSender({ ok: false }) })
+
+    await job(
+      baseJob({
+        type: 'pool.prized',
+        title: 'Título inline do job',
+        body: 'Corpo inline do job',
+        payload: { poolId: 'pool-1' }, // sem poolName/amountCents
+      }),
+    )
+
+    expect(email.sent[0]?.subject).toBe('Título inline do job')
+    expect(email.sent[0]?.text).toBe('Corpo inline do job')
+  })
+
+  it('dedupeScope: dois eventos pool.* DIFERENTES do MESMO usuário não colidem (P4, Onda 8)', async () => {
+    // Sem `dedupeScope`, `type:userId:channel` seria idêntico para dois bolões distintos do
+    // mesmo organizador — o segundo pareceria um retry do primeiro e seria suprimido. Este é
+    // exatamente o bug que `payload.dedupeScope` (buildDedupeKey) resolve.
+    const db = createFakeDb()
+    db.users.set(USER_ID, { id: USER_ID, email: 'owner@example.com' })
+    const email = fakeEmailSender()
+    const job = createNotifyJob({ prisma: db.prisma, emailSender: email, pushSender: fakePushSender({ ok: false }) })
+
+    await job(
+      baseJob({
+        type: 'pool.member_joined',
+        title: 'inline',
+        body: 'inline',
+        payload: {
+          poolId: 'pool-A',
+          poolName: 'Bolão A',
+          poolMemberId: 'member-A',
+          memberName: 'Ana',
+          shares: 1,
+          dedupeScope: 'member:member-A',
+        },
+      }),
+    )
+    await job(
+      baseJob({
+        type: 'pool.member_joined',
+        title: 'inline',
+        body: 'inline',
+        payload: {
+          poolId: 'pool-B',
+          poolName: 'Bolão B',
+          poolMemberId: 'member-B',
+          memberName: 'Bruno',
+          shares: 1,
+          dedupeScope: 'member:member-B',
+        },
+      }),
+    )
+
+    expect(email.sent).toHaveLength(2) // ambos enviados — não é o mesmo evento
+    expect(email.sent[0]?.subject).toBe('Ana entrou no bolão "Bolão A"')
+    expect(email.sent[1]?.subject).toBe('Bruno entrou no bolão "Bolão B"')
+  })
+
+  it('dedupeScope: reenviar o MESMO evento (mesmo dedupeScope) ainda deduplica normalmente', async () => {
+    const db = createFakeDb()
+    db.users.set(USER_ID, { id: USER_ID, email: 'owner@example.com' })
+    const email = fakeEmailSender()
+    const job = createNotifyJob({ prisma: db.prisma, emailSender: email, pushSender: fakePushSender({ ok: false }) })
+
+    const data = baseJob({
+      type: 'pool.member_joined',
+      title: 'inline',
+      body: 'inline',
+      payload: {
+        poolId: 'pool-A',
+        poolName: 'Bolão A',
+        poolMemberId: 'member-A',
+        memberName: 'Ana',
+        shares: 1,
+        dedupeScope: 'member:member-A',
+      },
+    })
+
+    await job(data)
+    await job(data) // retry do mesmo evento
+
+    expect(email.sent).toHaveLength(1)
+  })
+})
+
 // ─── Idempotência (P4) — segunda execução não duplica nem reenvia ─────────────
 
 describe('createNotifyJob — dedupe (P4)', () => {

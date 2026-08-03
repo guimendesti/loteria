@@ -4,11 +4,12 @@
  * o `PrismaClient` de verdade — os jobs recebem a interface mínima por injeção de
  * dependência, e os testes usam um duplo em memória no lugar deste adapter.
  */
-import type { PrismaClient } from '@lotopro/db'
+import { MemberStatus, type PrismaClient } from '@lotopro/db'
 import type { SyncResultsPrisma } from '../jobs/sync-results'
 import type { CheckBetsPrisma } from '../jobs/check-bets'
 import type { NotifyPrisma } from '../jobs/notify'
 import type { AccumulatedAlertPrisma, AccumulatedAlertPrismaContestRow } from '../jobs/accumulated-alert'
+import type { PoolNotifyMemberRow, PoolNotifyPrisma } from '../jobs/pool-notify'
 
 export function createSyncResultsPrismaAdapter(prisma: PrismaClient): SyncResultsPrisma {
   return {
@@ -189,6 +190,88 @@ export function createAccumulatedAlertPrismaAdapter(prisma: PrismaClient): Accum
         return rows.map((row) => ({
           userId: row.userId,
           accumulatedThresholdCents: row.accumulatedThresholdCents as bigint,
+        }))
+      },
+    },
+  }
+}
+
+// ─── Onda 8 — pool-notify ───────────────────────────────────────────────────────────────
+
+const poolMemberSelect = {
+  id: true,
+  poolId: true,
+  userId: true,
+  guestName: true,
+  shares: true,
+  user: { select: { name: true } },
+} as const
+
+function toPoolNotifyMemberRow(row: {
+  id: string
+  poolId: string
+  userId: string | null
+  guestName: string | null
+  shares: number
+  user: { name: string } | null
+}): PoolNotifyMemberRow {
+  return {
+    id: row.id,
+    poolId: row.poolId,
+    userId: row.userId,
+    guestName: row.guestName,
+    shares: row.shares,
+    userName: row.user?.name ?? null,
+  }
+}
+
+export function createPoolNotifyPrismaAdapter(prisma: PrismaClient): PoolNotifyPrisma {
+  return {
+    pool: {
+      findUnique: ({ where }) =>
+        prisma.pool.findUnique({ where: { id: where.id }, select: { id: true, ownerId: true, name: true } }),
+    },
+    poolMember: {
+      findUnique: async ({ where }) => {
+        const row = await prisma.poolMember.findUnique({ where: { id: where.id }, select: poolMemberSelect })
+        return row ? toPoolNotifyMemberRow(row) : null
+      },
+      // Broadcast (ex.: `receipt.attached`) — exclui membros `REMOVED`, que não fazem mais
+      // parte do bolão. Guest sem conta (`userId: null`) continua na lista; quem decide não
+      // notificá-lo é o job (`jobs/pool-notify.ts`), não o adapter.
+      findManyNotifiable: async ({ where }) => {
+        const rows = await prisma.poolMember.findMany({
+          where: { poolId: where.poolId, status: { not: MemberStatus.REMOVED } },
+          select: poolMemberSelect,
+        })
+        return rows.map(toPoolNotifyMemberRow)
+      },
+    },
+    poolPayment: {
+      findUnique: ({ where }) =>
+        prisma.poolPayment.findUnique({
+          where: { id: where.id },
+          select: { id: true, poolMemberId: true, amountCents: true },
+        }),
+    },
+    poolPayout: {
+      // `PoolPayout.contestId` não tem `@relation` declarada no schema (packages/db, fora do
+      // território desta tarefa) — resolve o número do concurso com uma segunda consulta em
+      // vez de um `include` (não exige mudança de schema).
+      findManyForContest: async ({ where }) => {
+        const rows = await prisma.poolPayout.findMany({
+          where: { poolId: where.poolId, contestId: where.contestId },
+          select: { id: true, poolMemberId: true, amountCents: true, poolMember: { select: { userId: true } } },
+        })
+        if (rows.length === 0) return []
+        const contest = await prisma.contest.findUnique({ where: { id: where.contestId }, select: { number: true } })
+        const contestNumber = contest?.number ?? 0
+        return rows.map((row) => ({
+          id: row.id,
+          poolMemberId: row.poolMemberId,
+          memberUserId: row.poolMember.userId,
+          amountCents: row.amountCents,
+          contestNumber,
         }))
       },
     },

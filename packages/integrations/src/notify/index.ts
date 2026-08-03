@@ -16,6 +16,8 @@ export type {
   BetCheckedTemplatePayload,
   ContestAccumulatedTemplatePayload,
   PoolPaymentPendingTemplatePayload,
+  PoolPaymentDeclaredTemplatePayload,
+  PoolPaymentConfirmedTemplatePayload,
   PoolBetPlacedTemplatePayload,
   PoolPrizedTemplatePayload,
 } from './types'
@@ -26,6 +28,8 @@ export {
   betCheckedTemplate,
   contestAccumulatedTemplate,
   poolPaymentPendingTemplate,
+  poolPaymentDeclaredTemplate,
+  poolPaymentConfirmedTemplate,
   poolBetPlacedTemplate,
   poolPrizedTemplate,
   billingPaymentFailedTemplate,

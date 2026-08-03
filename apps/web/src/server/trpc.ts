@@ -2,11 +2,13 @@
  * tRPC v11 — inicialização, contexto e procedures base.
  *
  * Contexto carrega a sessão do Better Auth (a partir dos headers da request
- * fetch), o client Prisma de @lotopro/db e `getEntitlements()` — leitor lazy
- * dos entitlements de plano do usuário (docs/06 §6.9). `protectedProcedure` é
- * o único lugar que decide "tem sessão ou não"; os guards de plano (G1..G10,
- * docs/05 §5.4) são responsabilidade de cada router (ver `guardOrThrow` abaixo
- * e `server/routers/bets.ts`).
+ * fetch), o client Prisma de @lotopro/db, `getEntitlements()` — leitor lazy
+ * dos entitlements de plano do usuário (docs/06 §6.9) — e `ip`/`userAgent`,
+ * extraídos uma vez por requisição para os routers de `admin/*` passarem a
+ * `writeAudit` (server/lib/admin/audit.ts) sem cada procedure ter que ler
+ * headers na mão. `protectedProcedure` é o único lugar que decide "tem sessão
+ * ou não"; os guards de plano (G1..G10, docs/05 §5.4) são responsabilidade de
+ * cada router (ver `guardOrThrow` abaixo e `server/routers/bets.ts`).
  */
 import { initTRPC, TRPCError } from '@trpc/server'
 import superjson from 'superjson'
@@ -16,8 +18,34 @@ import { auth } from '@/lib/auth'
 import { BetValidationError, PaywallError } from '@/server/errors'
 import { resolveEntitlements } from '@/server/lib/entitlements'
 
+/**
+ * IP do cliente por trás do Traefik (deploy — skill `deploy-monorepo-vps`): o app roda
+ * atrás de um reverse proxy, então o socket da requisição aqui dentro é sempre o do
+ * container Node, nunca o do navegador. `x-forwarded-for` é a lista "cliente, proxy1,
+ * proxy2, ..." que o Traefik injeta — o PRIMEIRO elemento é o cliente original, os demais
+ * são hops intermediários. Fallback para `x-real-ip` (também comum em config de proxy)
+ * quando o primeiro header não vem. `null` quando nenhum dos dois está presente (ex.:
+ * chamada direta em dev, sem proxy na frente) — nunca inventa um IP.
+ */
+function clientIpFromHeaders(headers: Headers): string | null {
+  const forwardedFor = headers.get('x-forwarded-for')
+  if (forwardedFor) {
+    const first = forwardedFor.split(',')[0]?.trim()
+    if (first) return first
+  }
+  const realIp = headers.get('x-real-ip')
+  return realIp && realIp.trim().length > 0 ? realIp.trim() : null
+}
+
 export async function createTRPCContext({ req }: { req: Request }) {
   const session = await auth.api.getSession({ headers: req.headers })
+  // `AuditLog.ip`/`.userAgent` (achado de auditoria, severidade média): sem isto no
+  // contexto, `writeAudit` (server/lib/admin/audit.ts) nunca tinha de onde tirar os dois
+  // campos — o log de auditoria registrava O QUE foi feito, nunca DE ONDE. Truncagem de
+  // user-agent para um tamanho são é responsabilidade de `writeAudit`, não daqui (único
+  // ponto de escrita na coluna).
+  const ip = clientIpFromHeaders(req.headers)
+  const userAgent = req.headers.get('user-agent')
 
   // Memoizado por FECHAMENTO — vive só durante esta requisição (uma
   // `createTRPCContext` por chamada HTTP). Nunca cacheado entre requisições:
@@ -39,6 +67,8 @@ export async function createTRPCContext({ req }: { req: Request }) {
     prisma,
     session,
     getEntitlements,
+    ip,
+    userAgent,
   }
 }
 

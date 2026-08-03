@@ -8,6 +8,9 @@
  *    conforme preferência, plano e horário de silêncio — ver `jobs/notify.ts`).
  *  - `accumulated-alert` (SY-10): varre concursos acumulados 1x/hora e enfileira `notify`
  *    para quem configurou um limiar — ver `jobs/accumulated-alert.ts`.
+ *  - `pool-notify`        (Onda 8): traduz eventos de domínio do bolão (membro entrou,
+ *    pagamento declarado/confirmado, comprovante anexado, rateio calculado) em jobs `notify`
+ *    para os destinatários certos — ver `jobs/pool-notify.ts`.
  *
  * Cada payload tem um schema Zod exportado — os jobs fazem `schema.parse(job.data)` antes
  * de processar, então um payload corrompido falha cedo e com mensagem clara em vez de
@@ -18,6 +21,7 @@ import Redis from 'ioredis'
 import { Queue } from 'bullmq'
 import { ALL_LOTTERIES, type LotterySlug } from '@lotopro/core'
 import type { WorkerConfig } from './config'
+import type { PoolNotifyJobData } from './jobs/pool-notify'
 
 // ─── Slug de modalidade como enum Zod ────────────────────────────────────────
 // `LotterySlug` é um union type puro em @lotopro/core (sem schema Zod companion).
@@ -42,6 +46,7 @@ export const QUEUE_NAMES = {
   NOTIFY: 'notify',
   ACCUMULATED_ALERT: 'accumulated-alert',
   BILLING_DUNNING: 'billing-dunning',
+  POOL_NOTIFY: 'pool-notify',
 } as const
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES]
@@ -122,6 +127,7 @@ export interface Queues {
   notify: Queue<NotifyJobData>
   accumulatedAlert: Queue<AccumulatedAlertJobData>
   billingDunning: Queue<BillingDunningJobData>
+  poolNotify: Queue<PoolNotifyJobData>
 }
 
 export function createQueues(connection: Redis): Queues {
@@ -131,6 +137,7 @@ export function createQueues(connection: Redis): Queues {
     notify: new Queue<NotifyJobData>(QUEUE_NAMES.NOTIFY, { connection }),
     accumulatedAlert: new Queue<AccumulatedAlertJobData>(QUEUE_NAMES.ACCUMULATED_ALERT, { connection }),
     billingDunning: new Queue<BillingDunningJobData>(QUEUE_NAMES.BILLING_DUNNING, { connection }),
+    poolNotify: new Queue<PoolNotifyJobData>(QUEUE_NAMES.POOL_NOTIFY, { connection }),
   }
 }
 
@@ -140,5 +147,7 @@ export async function closeQueues(queues: Queues): Promise<void> {
     queues.checkBets.close(),
     queues.notify.close(),
     queues.accumulatedAlert.close(),
+    queues.billingDunning.close(),
+    queues.poolNotify.close(),
   ])
 }

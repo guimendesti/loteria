@@ -51,6 +51,18 @@ export interface AuditPrisma {
   }
 }
 
+/**
+ * Tamanho são para `AuditLog.userAgent` — um header forjado/gigante nunca deveria estourar
+ * a coluna nem inflar o log. 256 chars sobra folga para qualquer UA real (os mais longos em
+ * uso, com engine/plataforma/extensões, ficam bem abaixo disso).
+ */
+const MAX_USER_AGENT_LENGTH = 256
+
+/** Trunca sem tocar em `null` (ausência explícita, ex.: chamada sem headers de proxy). */
+function truncateUserAgent(value: string | null): string | null {
+  return value === null ? null : value.slice(0, MAX_USER_AGENT_LENGTH)
+}
+
 export async function writeAudit(prisma: AuditPrisma, input: AuditLogCreateData): Promise<AuditLogRow> {
   return prisma.auditLog.create({
     data: {
@@ -65,7 +77,7 @@ export async function writeAudit(prisma: AuditPrisma, input: AuditLogCreateData)
       ...(input.before !== undefined ? { before: input.before as Prisma.InputJsonValue } : {}),
       ...(input.after !== undefined ? { after: input.after as Prisma.InputJsonValue } : {}),
       ...(input.ip !== undefined ? { ip: input.ip } : {}),
-      ...(input.userAgent !== undefined ? { userAgent: input.userAgent } : {}),
+      ...(input.userAgent !== undefined ? { userAgent: truncateUserAgent(input.userAgent) } : {}),
     },
   })
 }

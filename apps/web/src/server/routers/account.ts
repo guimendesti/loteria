@@ -31,7 +31,7 @@
  */
 import { TRPCError } from '@trpc/server'
 import { z } from 'zod'
-import { PixKeyType, PoolStatus, type NotificationPreference } from '@lotopro/db'
+import { PixKeyType, PoolStatus, UserRole, type NotificationPreference } from '@lotopro/db'
 import { currentPeriod, hasChannel, UNLIMITED, type Limit } from '@lotopro/core'
 import { guardOrThrow, protectedProcedure, router } from '@/server/trpc'
 import { decryptSecret, encryptSecret } from '@/server/lib/crypto'
@@ -512,6 +512,16 @@ export const DELETE_ACCOUNT_CONFIRMATION_PHRASE = 'EXCLUIR MINHA CONTA'
  * e-mail ORIGINAL do provedor continuaria funcionando mesmo com `User.email` trocado
  * (Better Auth casa OAuth por `Account.providerId+accountId`, não por e-mail).
  *
+ * `passwordHash: null` + `role: CUSTOMER` — achado de auditoria (severidade média): a
+ * credencial "de verdade" do Better Auth (`Account.password`) já era apagada acima, mas
+ * `User.passwordHash` (legado/reserva, ver comentário no schema) e `User.role` ficavam
+ * intactos. Uma conta ADMIN "excluída" continuava com `role: ADMIN` gravado para sempre —
+ * defesa em profundidade contra qualquer caminho futuro (suporte, restauração, um outro
+ * código que confie em `role` sem checar `deletedAt`) que reative acesso de backoffice para
+ * uma identidade que deveria ter virado um CUSTOMER anônimo. MESMO padrão de
+ * `admin.users.anonymize` (`routers/admin/users.ts`) — nunca reimplementado, só espelhado
+ * aqui porque é o titular exercendo o próprio direito (rota diferente, mesma garantia).
+ *
  * Cancelamento da assinatura no gateway (Asaas) fica FORA daqui de propósito: chamada
  * de rede externa dentro de `$transaction` é anti-padrão, e `billing.cancel` já existe
  * pronto para isso — a tela (`conta/privacidade/page.tsx`) chama `trpc.billing.cancel`
@@ -550,6 +560,11 @@ const deleteAccountProcedure = protectedProcedure
           image: null,
           pixKeyEncrypted: null,
           pixKeyType: null,
+          passwordHash: null,
+          // Defesa em profundidade: uma identidade anonimizada não deveria reter
+          // privilégio de backoffice, mesmo que este ID um dia tenha tido um (mesmo
+          // comentário/garantia de `admin.users.anonymize`).
+          role: UserRole.CUSTOMER,
           deletedAt,
         },
       }),

@@ -13,6 +13,7 @@
  */
 import { z } from 'zod'
 import { protectedProcedure, publicProcedure, router } from '@/server/trpc'
+import { writeAudit } from '@/server/lib/admin/audit'
 
 const subscribeInput = z.object({
   endpoint: z.string().url(),
@@ -45,10 +46,26 @@ export const pushRouter = router({
    * subscription já ativa) — upsert evita duplicar linha e realinha `userId` para a sessão
    * atual (relevante se o endpoint sobreviveu a um logout/login de outra conta no mesmo
    * navegador/perfil).
+   *
+   * ⚠️ TRADEOFF DELIBERADO (achado de auditoria, severidade média): reatribuir `userId` por
+   * `endpoint` é INTENCIONAL — é o único jeito de suportar dispositivo compartilhado
+   * (logout de A, login de B, no MESMO navegador: o endpoint do Service Worker é o mesmo,
+   * só quem está logado mudou). Bloquear a reatribuição quebraria esse fluxo legítimo. O
+   * problema não era a troca em si, era ela ser SILENCIOSA — sem rastro de quem "roubou" a
+   * inscrição de quem. Agora toda reatribuição real (endpoint já pertencia a OUTRO usuário)
+   * gera uma linha em `AuditLog`. `update` abaixo sempre grava `p256dh`/`auth` do input
+   * JUNTO com o novo `userId` (nunca em chamadas separadas) — as chaves de criptografia do
+   * Web Push nunca ficam "órfãs", misturando o dono novo com o par de chaves antigo.
    */
   subscribe: protectedProcedure.input(subscribeInput).mutation(async ({ ctx, input }) => {
     const userId = ctx.session.user.id
-    await ctx.prisma.pushSubscription.upsert({
+
+    const existing = await ctx.prisma.pushSubscription.findUnique({
+      where: { endpoint: input.endpoint },
+      select: { userId: true },
+    })
+
+    const subscription = await ctx.prisma.pushSubscription.upsert({
       where: { endpoint: input.endpoint },
       create: {
         userId,
@@ -64,6 +81,21 @@ export const pushRouter = router({
         ...(input.userAgent !== undefined ? { userAgent: input.userAgent } : {}),
       },
     })
+
+    if (existing && existing.userId !== userId) {
+      await writeAudit(ctx.prisma, {
+        actorId: userId,
+        actorRole: ctx.session.user.role,
+        action: 'push.subscription_reassigned',
+        entityType: 'PushSubscription',
+        entityId: subscription.id,
+        before: { userId: existing.userId },
+        after: { userId },
+        ip: ctx.ip,
+        userAgent: ctx.userAgent,
+      })
+    }
+
     return { ok: true } as const
   }),
 

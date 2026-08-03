@@ -123,6 +123,23 @@ describe('writeAudit', () => {
     expect(rows[0]).toMatchObject({ ip: '203.0.113.10', userAgent: 'Mozilla/5.0' })
   })
 
+  it('trunca userAgent em 256 caracteres — um header forjado/gigante nunca estoura a coluna', async () => {
+    const { prisma, rows } = createFakeAuditPrisma()
+    const giant = 'A'.repeat(1000)
+
+    await writeAudit(prisma, {
+      actorId: 'admin-1',
+      actorRole: 'ADMIN',
+      action: 'admin.user.anonymized',
+      entityType: 'User',
+      entityId: 'user-7',
+      userAgent: giant,
+    })
+
+    expect(rows[0]?.userAgent).toHaveLength(256)
+    expect(rows[0]?.userAgent).toBe('A'.repeat(256))
+  })
+
   it('cada chamada gera uma linha nova (nunca faz upsert/atualiza uma existente)', async () => {
     const { prisma, rows } = createFakeAuditPrisma()
 

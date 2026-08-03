@@ -1,7 +1,7 @@
 /**
- * Bootstrap do worker LotoPro: valida config, instancia as 4 filas/workers (SY-01/03/04/10),
- * registra os schedulers (SY-01 janela dinâmica; SY-10 repetível 1x/hora), sobe o
- * healthcheck (SY-14) e faz shutdown gracioso em SIGTERM/SIGINT.
+ * Bootstrap do worker LotoPro: valida config, instancia as filas/workers (SY-01/03/04/10 +
+ * Onda 8 `pool-notify`), registra os schedulers (SY-01 janela dinâmica; SY-10 repetível
+ * 1x/hora), sobe o healthcheck (SY-14) e faz shutdown gracioso em SIGTERM/SIGINT.
  */
 import { Worker } from 'bullmq'
 import { PrismaClient } from '@lotopro/db'
@@ -23,6 +23,7 @@ import {
   createCheckBetsPrismaAdapter,
   createNotifyPrismaAdapter,
   createAccumulatedAlertPrismaAdapter,
+  createPoolNotifyPrismaAdapter,
 } from './lib/prisma-adapters'
 import { createSyncResultsJob } from './jobs/sync-results'
 import { createCheckBetsJob } from './jobs/check-bets'
@@ -33,6 +34,7 @@ import {
   createBillingDunningPrismaAdapter,
   registerBillingDunningSchedule,
 } from './jobs/billing-dunning'
+import { createPoolNotifyJob } from './jobs/pool-notify'
 import { createSyncWindowGate, registerSyncSchedule, createGatedSyncProcessor } from './scheduler'
 import { createHealthServer } from './health'
 import type Redis from 'ioredis'
@@ -83,6 +85,16 @@ async function bootstrap(): Promise<void> {
     logger: createLogger('accumulated-alert'),
   })
 
+  // Onda 8 — pool-notify: evento de domínio do bolão → jobs `notify` (jobs/pool-notify.ts).
+  // Sempre registrado (não depende de nenhuma env condicional, ao contrário do dunning
+  // abaixo) — quem enfileira eventos aqui é `apps/web/src/server/routers/pool.ts`, ver
+  // `apps/web/src/server/routers/_pool-notify-register.md`.
+  const runPoolNotify = createPoolNotifyJob({
+    prisma: createPoolNotifyPrismaAdapter(prisma),
+    notifyQueue: queues.notify,
+    logger: createLogger('pool-notify'),
+  })
+
   const gate = createSyncWindowGate({ redis: connection })
   const schedulerLogger = createLogger('scheduler')
   const gatedSync = createGatedSyncProcessor(gate, (slugs) => runSyncResults(slugs), schedulerLogger)
@@ -92,6 +104,7 @@ async function bootstrap(): Promise<void> {
     new Worker(QUEUE_NAMES.CHECK_BETS, (job) => runCheckBets(job.data), { connection, concurrency: 4 }),
     new Worker(QUEUE_NAMES.NOTIFY, (job) => runNotify(job.data), { connection, concurrency: 8 }),
     new Worker(QUEUE_NAMES.ACCUMULATED_ALERT, (job) => runAccumulatedAlert(job.data), { connection, concurrency: 1 }),
+    new Worker(QUEUE_NAMES.POOL_NOTIFY, (job) => runPoolNotify(job.data), { connection, concurrency: 4 }),
   ]
 
   for (const worker of workers) {

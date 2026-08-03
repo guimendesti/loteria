@@ -1,9 +1,10 @@
 'use client'
 
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
-import { useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { Suspense, useState } from 'react'
 import { authClient } from '@/lib/auth-client'
+import { sanitizeCallbackURL } from '@/lib/safe-redirect'
 
 /**
  * AU-01 — cadastro com e-mail + senha, com checkbox obrigatório de
@@ -14,9 +15,24 @@ import { authClient } from '@/lib/auth-client'
  * (`packages/db`, fora do escopo desta tarefa) — por ora é só um bloqueio
  * client-side do submit; registrar o aceite com timestamp fica para quando
  * esse campo existir no schema.
+ *
+ * `?callbackURL=` (Onda 8) — mesma convenção de `app/(auth)/login/page.tsx`: preserva para
+ * onde voltar depois do cadastro (ex.: convite de bolão `/j/[inviteCode]`).
  */
 export default function CadastroPage() {
+  return (
+    <Suspense fallback={null}>
+      <CadastroForm />
+    </Suspense>
+  )
+}
+
+function CadastroForm() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const callbackURL = sanitizeCallbackURL(searchParams.get('callbackURL')) ?? '/app'
+  const loginHref = callbackURL === '/app' ? '/login' : `/login?callbackURL=${encodeURIComponent(callbackURL)}`
+
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -54,7 +70,7 @@ export default function CadastroPage() {
       return
     }
 
-    router.push('/app')
+    router.push(callbackURL)
   }
 
   return (
@@ -62,7 +78,7 @@ export default function CadastroPage() {
       <h1 className="font-display text-2xl font-bold text-ink-900">Criar conta grátis</h1>
       <p className="mt-1 text-sm text-ink-600">
         Já tem conta?{' '}
-        <Link href="/login" className="font-semibold text-brand-700 hover:underline">
+        <Link href={loginHref} className="font-semibold text-brand-700 hover:underline">
           Entrar
         </Link>
       </p>

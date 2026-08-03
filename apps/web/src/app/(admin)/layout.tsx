@@ -1,7 +1,7 @@
 import { headers } from 'next/headers'
 import { redirect } from 'next/navigation'
 import { auth } from '@/lib/auth'
-import { ADMIN_ROLES, type AdminRole } from '@/server/lib/admin/rbac'
+import { ADMIN_NAV_SECTIONS, ADMIN_ROLES, canAccessNavSection, type AdminRole } from '@/server/lib/admin/rbac'
 import { TRPCReactProvider } from '@/app/(app)/trpc-provider'
 import { AdminNav } from './components/AdminNav'
 import { AdminRoleProvider } from './components/AdminRoleContext'
@@ -35,13 +35,20 @@ export default async function AdminLayout({
     redirect('/app')
   }
 
+  // Filtra o menu pelo MESMO mapa de permissões que os routers `admin/*.ts` usam
+  // (`server/lib/admin/rbac.ts` — achado de auditoria, severidade média: mostrar uma seção
+  // que o papel não pode abrir vaza a topologia do backoffice). Calculado aqui (server
+  // component, já tem `role` validado) e passado como dado simples para `AdminNav`
+  // ('use client'), que nunca importa `rbac.ts` em tempo de execução.
+  const navItems = ADMIN_NAV_SECTIONS.filter((section) => canAccessNavSection(role, section))
+
   return (
     <TRPCReactProvider>
       <div className="flex min-h-screen">
       <aside className="w-64 shrink-0 border-r border-ink-200 bg-brand-900 px-6 py-5 text-white">
         <p className="font-display text-xl font-bold">LotoPro Admin</p>
         <p className="mt-1 text-xs text-brand-300">{role}</p>
-        <AdminNav />
+        <AdminNav items={navItems} />
       </aside>
       <main className="flex-1 bg-ink-50 px-8 py-8">
         <AdminRoleProvider role={role}>{children}</AdminRoleProvider>
