@@ -35,6 +35,13 @@ RUN pnpm -F @lotopro/db exec prisma generate
 # elas caem no fallback de erro e são revalidadas por ISR em runtime.
 ENV DATABASE_URL="postgresql://build:build@localhost:5432/build"
 ENV NEXT_TELEMETRY_DISABLED=1
+# O domínio público PRECISA existir no build, não só em runtime: `sitemap.ts` e
+# `robots.ts` são pré-renderizados aqui e assam a URL base no arquivo. Sem isto
+# eles saem com o domínio de fallback de `(marketing)/lib/site.ts` e servem, em
+# produção, um `Sitemap:` apontando para outro host — o `robots.txt` nem se
+# corrige sozinho (não faz query, logo nunca revalida com dado novo).
+ARG BETTER_AUTH_URL="http://localhost:3000"
+ENV BETTER_AUTH_URL=$BETTER_AUTH_URL
 RUN pnpm -F @lotopro/web build
 
 # O `output: standalone` do Next NÃO inclui o engine nativo do Prisma (.so.node) —

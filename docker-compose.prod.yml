@@ -59,6 +59,10 @@ services:
     build:
       context: .
       target: web
+      args:
+        # Precisa chegar no BUILD, não só no runtime: sitemap.ts/robots.ts são
+        # pré-renderizados e assam a URL base no arquivo servido.
+        BETTER_AUTH_URL: https://${DOMAIN:-loteria.iauai.online}
     restart: unless-stopped
     environment:
       NODE_ENV: production
