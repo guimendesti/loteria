@@ -16,7 +16,7 @@
 import { z } from 'zod'
 import { NotificationStatus, UserRole } from '@lotopro/db'
 import { router } from '@/server/trpc'
-import { adminProcedure } from '@/server/lib/admin/rbac'
+import { adminProcedure, requirePermission } from '@/server/lib/admin/rbac'
 
 const messagesListInput = z.object({
   notificationsLimit: z.number().int().min(1).max(100).default(30),
@@ -29,6 +29,13 @@ const userNotificationsInput = z.object({
   limit: z.number().int().min(1).max(100).default(30),
 })
 
+/**
+ * ⚠️ Gate fino obrigatório: `adminProcedure(SUPPORT)` sozinho NÃO barra um ator FINANCE —
+ * `ROLE_RANK[SUPPORT] === ROLE_RANK[FINANCE]` (papéis paralelos, docblock de
+ * `server/lib/admin/rbac.ts`). O conteúdo daqui é comunicação com o cliente (título/corpo de
+ * notificação, PII) e não faz parte do trabalho do financeiro — `requirePermission(ctx,
+ * 'support:read')` é o que de fato restringe a SUPPORT/ADMIN.
+ */
 export const adminSupportRouter = router({
   /**
    * BO-50 — "caixa de suporte" aproximada (ver cabeçalho): notificações que falharam +
@@ -37,6 +44,8 @@ export const adminSupportRouter = router({
    */
   messages: router({
     list: adminProcedure(UserRole.SUPPORT).input(messagesListInput).query(async ({ ctx, input }) => {
+      requirePermission(ctx, 'support:read')
+
       const [failedNotifications, recentAuditEvents] = await Promise.all([
         ctx.prisma.notification.findMany({
           where: { status: NotificationStatus.FAILED },
@@ -55,6 +64,8 @@ export const adminSupportRouter = router({
 
   /** BO-51 — histórico de notificações de UM usuário, para depurar "não recebi". */
   userNotifications: adminProcedure(UserRole.SUPPORT).input(userNotificationsInput).query(async ({ ctx, input }) => {
+    requirePermission(ctx, 'support:read')
+
     const rows = await ctx.prisma.notification.findMany({
       where: { userId: input.userId },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],

@@ -42,7 +42,7 @@ import { BetSource, Prisma, UserRole, type PrismaClient } from '@lotopro/db'
 import { router } from '@/server/trpc'
 import { lotterySlugSchema } from '@/server/lib/lottery-schema'
 import { parseColumns, parseExtraPicks, parseTierCounts } from '@/server/lib/bet-json'
-import { adminProcedure } from '@/server/lib/admin/rbac'
+import { adminProcedure, requirePermission } from '@/server/lib/admin/rbac'
 import { writeAudit } from '@/server/lib/admin/audit'
 
 // ─── Reconstrução de ContestResult a partir do banco (ver cabeçalho — duplicação conhecida) ──
@@ -427,8 +427,15 @@ export const adminBetsRouter = router({
    * BO-21 — ferramenta de correção: apaga e refaz a conferência de um escopo (concurso ou
    * aposta). SUPPORT é o papel mínimo (docs/08 §D.1: "reprocessar conferência" está listado
    * explicitamente nas permissões de SUPPORT). Grava `AuditLog` sempre.
+   *
+   * ⚠️ O gate fino não é redundante: `adminProcedure(SUPPORT)` sozinho deixa passar um ator
+   * FINANCE (mesmo `ROLE_RANK` — papéis paralelos, ver `server/lib/admin/rbac.ts`), e esta é
+   * uma ação DESTRUTIVA sobre dados de todos os usuários (apaga os `BetCheck` do concurso
+   * antes de refazê-los). `requirePermission` restringe de fato a SUPPORT/ADMIN.
    */
   reprocessChecks: adminProcedure(UserRole.SUPPORT).input(reprocessInput).mutation(async ({ ctx, input }) => {
+    requirePermission(ctx, 'checks:reprocess')
+
     const actor = ctx.session.user
     const prisma = createAdminReprocessPrismaAdapter(ctx.prisma)
 

@@ -177,3 +177,43 @@ describe('hasPermission / requirePermission — conjunto de permissões (gate fi
     expect(requirePermission(ctxFor('ADMIN'), 'users:lgpd:anonymize')).toBe('ADMIN')
   })
 })
+
+/**
+ * Regressão de segurança: como `ROLE_RANK[SUPPORT] === ROLE_RANK[FINANCE]`, o gate GROSSO
+ * sozinho (`adminProcedure('FINANCE')` / `adminProcedure('SUPPORT')`) deixa os dois papéis
+ * passarem um pelo território do outro. As permissões abaixo são o que de fato separa os dois
+ * — se alguma delas voltar a ser concedida aos dois papéis, ou se um router de `admin/*`
+ * deixar de chamar `requirePermission`, um agente de suporte volta a mexer em cobrança e um
+ * analista financeiro volta a reprocessar conferência / ler a caixa de suporte.
+ */
+describe('separação SUPPORT × FINANCE nas permissões de território (regressão)', () => {
+  it('financeiro (billing:read/write) é de FINANCE e ADMIN — nunca de SUPPORT ou VIEWER', () => {
+    for (const permission of ['billing:read', 'billing:write'] as const) {
+      expect(hasPermission('FINANCE', permission)).toBe(true)
+      expect(hasPermission('ADMIN', permission)).toBe(true)
+      expect(hasPermission('SUPPORT', permission)).toBe(false)
+      expect(hasPermission('VIEWER', permission)).toBe(false)
+    }
+  })
+
+  it('atendimento (support:read) e reprocessamento (checks:reprocess) são de SUPPORT e ADMIN — nunca de FINANCE ou VIEWER', () => {
+    for (const permission of ['support:read', 'checks:reprocess'] as const) {
+      expect(hasPermission('SUPPORT', permission)).toBe(true)
+      expect(hasPermission('ADMIN', permission)).toBe(true)
+      expect(hasPermission('FINANCE', permission)).toBe(false)
+      expect(hasPermission('VIEWER', permission)).toBe(false)
+    }
+  })
+
+  it('o gate grosso NÃO basta: FINANCE passa em requireRole("SUPPORT") mas falha em checks:reprocess', () => {
+    const financeCtx = ctxFor('FINANCE')
+    expect(requireRole(financeCtx, 'SUPPORT')).toBe('FINANCE')
+    expect(() => requirePermission(financeCtx, 'checks:reprocess')).toThrowError(TRPCError)
+  })
+
+  it('o gate grosso NÃO basta: SUPPORT passa em requireRole("FINANCE") mas falha em billing:write', () => {
+    const supportCtx = ctxFor('SUPPORT')
+    expect(requireRole(supportCtx, 'FINANCE')).toBe('SUPPORT')
+    expect(() => requirePermission(supportCtx, 'billing:write')).toThrowError(TRPCError)
+  })
+})

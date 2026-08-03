@@ -69,8 +69,15 @@ services:
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       ASAAS_API_KEY: ${ASAAS_API_KEY:-}
       ASAAS_WEBHOOK_TOKEN: ${ASAAS_WEBHOOK_TOKEN:-}
+      # Cripto da chave Pix do organizador de bolão (AES-256-GCM). Sem ela,
+      # account.pixKey.* falha ALTO em runtime — a feature nasce morta.
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?defina ENCRYPTION_KEY no .env (openssl rand -base64 32)}
+      # O admin enfileira re-sync na fila do worker; a chave VAPID pública é servida ao cliente.
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
     depends_on:
       postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
       migrate: { condition: service_completed_successfully }
     networks: [internal, traefik]
     labels:

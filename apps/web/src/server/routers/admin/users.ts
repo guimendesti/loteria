@@ -96,6 +96,36 @@ const userDetailSelect = {
   },
 } satisfies Prisma.UserSelect
 
+/**
+ * Bolões que o usuário ORGANIZA, para o export LGPD (BO-14). Lista explícita de campos, e
+ * não a linha inteira, pelo mesmo motivo dos `select` de `User` acima: `Pool` tem DUAS
+ * colunas que não podem sair daqui —
+ * - `ownerPixKeyEnc`: snapshot cifrado da chave Pix do organizador (mesmo material sensível
+ *   de `User.pixKeyEncrypted`, só que em outra tabela; docs/03 §3.5 "nunca logar/expor");
+ * - `inviteCode`: credencial VIVA de entrada no bolão (`@unique`, usada no link de convite) —
+ *   vazá-la num export permitiria a quem lesse o arquivo entrar no bolão.
+ */
+const poolExportSelect = {
+  id: true,
+  tenantId: true,
+  lotteryId: true,
+  name: true,
+  description: true,
+  contestFrom: true,
+  contestTo: true,
+  totalShares: true,
+  shareValueCents: true,
+  totalCostCents: true,
+  status: true,
+  ownerPixKeyType: true, // tipo só (CPF/CNPJ/...) — NUNCA `ownerPixKeyEnc`
+  receiptUrl: true,
+  receiptUploadedAt: true,
+  rulesAcceptedAt: true,
+  inviteExpiresAt: true,
+  closedAt: true,
+  createdAt: true,
+} satisfies Prisma.PoolSelect
+
 const invoiceSelect = {
   id: true,
   amountCents: true,
@@ -472,7 +502,7 @@ export const adminUsersRouter = router({
           where: { userId: input.userId },
           include: { lottery: { select: { slug: true, name: true } }, checks: true },
         }),
-        ctx.prisma.pool.findMany({ where: { ownerId: input.userId } }),
+        ctx.prisma.pool.findMany({ where: { ownerId: input.userId }, select: poolExportSelect }),
         ctx.prisma.poolMember.findMany({
           where: { userId: input.userId },
           include: { pool: { select: { id: true, name: true } } },
@@ -520,9 +550,26 @@ export const adminUsersRouter = router({
   anonymize: adminProcedure('ADMIN').input(anonymizeInput).mutation(async ({ ctx, input }) => {
     requirePermission(ctx, 'users:lgpd:anonymize')
 
+    // Auto-anonimização é lockout IRREVERSÍVEL: rebaixa o próprio papel para CUSTOMER e
+    // apaga as próprias sessões e contas. Sendo o único ADMIN, ninguém mais entra no
+    // backoffice — e não há caminho de recuperação pela aplicação (só SQL direto).
+    // `setRole` já bloqueia o auto-rebaixamento; este é o mesmo invariante pelo outro caminho.
+    // Titular que queira exercer o direito de exclusão usa `account.deleteAccount`; se for
+    // ADMIN, outro ADMIN o rebaixa antes.
+    if (input.userId === ctx.session.user.id) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message:
+          'Você não pode anonimizar a própria conta pelo backoffice (risco de lockout). ' +
+          'Peça a outro administrador, ou use a exclusão de conta no painel do cliente.',
+      })
+    }
+
+    // Não lemos e-mail/nome originais: não são necessários para anonimizar (o e-mail novo é
+    // derivado do `id`) e não podem ir para o `AuditLog` — ver comentário no `writeAudit` abaixo.
     const user = await ctx.prisma.user.findUnique({
       where: { id: input.userId },
-      select: { id: true, email: true, name: true, deletedAt: true },
+      select: { id: true, deletedAt: true },
     })
     if (!user) throw new TRPCError({ code: 'NOT_FOUND', message: 'Usuário não encontrado.' })
     if (user.deletedAt) {
@@ -562,7 +609,13 @@ export const adminUsersRouter = router({
       action: 'admin.user.anonymized',
       entityType: 'User',
       entityId: input.userId,
-      before: { email: user.email, name: user.name },
+      // LGPD (BO-15): o `before` NÃO guarda o e-mail/nome ORIGINAIS. `admin.users.detail`
+      // (timeline) e `admin.support.messages.list` devolvem linhas de `AuditLog` cruas para o
+      // backoffice — gravar a PII aqui deixaria o identificador do titular legível para
+      // qualquer operador PARA SEMPRE, depois de a conta ter sido anonimizada; ou seja, a
+      // anonimização não seria efetiva. `entityId` já registra QUEM foi anonimizado, e
+      // `after.email` é o placeholder derivado do id (não identifica a pessoa).
+      before: { anonymizedFields: ['email', 'name', 'phone', 'avatarUrl', 'image', 'passwordHash', 'pixKey', 'role'] },
       after: { email: anonymizedEmail, name: anonymizedName, reason: input.reason },
     })
 

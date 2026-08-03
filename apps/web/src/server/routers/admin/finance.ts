@@ -16,7 +16,7 @@ import { TRPCError } from '@trpc/server'
 import { z } from 'zod'
 import { BillingCycle, InvoiceStatus, Prisma, SubStatus, UserRole, type PrismaClient } from '@lotopro/db'
 import { router } from '@/server/trpc'
-import { adminProcedure } from '@/server/lib/admin/rbac'
+import { adminProcedure, requirePermission } from '@/server/lib/admin/rbac'
 import { writeAudit } from '@/server/lib/admin/audit'
 import { createWebhookPrismaAdapter } from '@/server/lib/billing/prisma-adapter'
 import { createAsaasWebhookHandler } from '@/server/lib/billing/webhook'
@@ -212,9 +212,19 @@ async function loadPaidEvents(prisma: PrismaClient, monthEnd: Date): Promise<Mrr
     }))
 }
 
+/**
+ * ⚠️ Gate fino obrigatório em TODA procedure deste router: `adminProcedure(FINANCE)` sozinho
+ * NÃO barra um ator SUPPORT — `ROLE_RANK[SUPPORT] === ROLE_RANK[FINANCE]` (papéis paralelos,
+ * ver docblock de `server/lib/admin/rbac.ts`), então o gate grosso deixa os dois passarem.
+ * `requirePermission(ctx, 'billing:*')` é o que de fato torna estas ações exclusivas do
+ * financeiro — sem ele, um agente de suporte reabria faturas (`retryInvoice`) e reprocessava
+ * webhooks de cobrança (`replayWebhook`).
+ */
 export const adminFinanceRouter = router({
   /** BO-30 — assinaturas com filtro de status/plano/ciclo, paginação cursor. */
   subscriptions: adminProcedure(UserRole.FINANCE).input(subscriptionsListInput).query(async ({ ctx, input }) => {
+    requirePermission(ctx, 'billing:read')
+
     const where: Prisma.SubscriptionWhereInput = {
       ...(input.status ? { status: input.status } : {}),
       ...(input.billingCycle ? { billingCycle: input.billingCycle } : {}),
@@ -237,6 +247,8 @@ export const adminFinanceRouter = router({
 
   /** BO-31 — faturas com filtro de status/período (`dueAt`), paginação cursor. */
   invoices: adminProcedure(UserRole.FINANCE).input(invoicesListInput).query(async ({ ctx, input }) => {
+    requirePermission(ctx, 'billing:read')
+
     const where: Prisma.InvoiceWhereInput = {
       ...(input.status ? { status: input.status } : {}),
       ...(input.subscriptionId ? { subscriptionId: input.subscriptionId } : {}),
@@ -273,6 +285,8 @@ export const adminFinanceRouter = router({
    * para reemitir a cobrança e atualizar `gatewayInvoiceId`.
    */
   retryInvoice: adminProcedure(UserRole.FINANCE).input(retryInvoiceInput).mutation(async ({ ctx, input }) => {
+    requirePermission(ctx, 'billing:write')
+
     const actor = ctx.session.user
     const invoice = await ctx.prisma.invoice.findUnique({ where: { id: input.invoiceId } })
     if (!invoice) throw new TRPCError({ code: 'NOT_FOUND', message: 'Fatura não encontrada.' })
@@ -303,6 +317,8 @@ export const adminFinanceRouter = router({
 
   /** BO-34 — MRR novo/expansão/contração/churn do mês (default: mês corrente), em centavos. */
   mrrReport: adminProcedure(UserRole.FINANCE).input(mrrReportInput).query(async ({ ctx, input }) => {
+    requirePermission(ctx, 'billing:read')
+
     const now = new Date()
     const month = input.month ?? currentMonthSlug(now)
     const { monthStart, monthEnd } = parseMonth(month)
@@ -325,6 +341,8 @@ export const adminFinanceRouter = router({
 
   /** BO-36 — log de webhooks recebidos, com filtro de processado/erro. */
   webhookEvents: adminProcedure(UserRole.FINANCE).input(webhookEventsListInput).query(async ({ ctx, input }) => {
+    requirePermission(ctx, 'billing:read')
+
     const where: Prisma.WebhookEventWhereInput = {
       ...(input.provider ? { provider: input.provider } : {}),
       ...(input.processed === true ? { processedAt: { not: null } } : {}),
@@ -354,6 +372,8 @@ export const adminFinanceRouter = router({
    * Só Asaas é suportado nesta onda (único provider integrado — ver `WebhookEvent.provider`).
    */
   replayWebhook: adminProcedure(UserRole.FINANCE).input(replayWebhookInput).mutation(async ({ ctx, input }) => {
+    requirePermission(ctx, 'billing:write')
+
     const actor = ctx.session.user
     const event = await ctx.prisma.webhookEvent.findUnique({ where: { id: input.id } })
     if (!event) throw new TRPCError({ code: 'NOT_FOUND', message: 'Evento de webhook não encontrado.' })

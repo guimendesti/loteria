@@ -18,7 +18,25 @@
 
 ---
 
-## ✅ SESSÃO 1 (Ondas 1–2) · ✅ SESSÃO 2 (Ondas 3a–3b) · ✅ SESSÃO 3 (Passo 0 + Ondas 5–6)
+## 📌 LEIA PRIMEIRO — estado em 03/08/2026
+
+**Produção no ar:** https://loteria.iauai.online (ver seção PRODUÇÃO abaixo).
+**Repositório:** `git@github.com:guimendesti/loteria.git` (branch `main`).
+**Testes:** 623 verdes (160 core · 60 db · 195 integrations · 71 worker · 137 web) · typecheck exit 0.
+
+**Skills do projeto** (`.claude/skills/`) — conhecimento destilado, reaproveitável:
+`deploy-monorepo-vps` (7 bugs de container/Traefik/Prisma já diagnosticados) ·
+`orquestracao-ondas` (protocolo de subagentes + escolha de modelo) ·
+`loterias-caixa-br` (domínio: API, bloqueios, cálculo, limites jurídicos).
+
+**Sessão 4 (03/08) entregou:** backoffice completo (RBAC + auditoria + dashboard + usuários +
+apostas/reprocesso + financeiro + config + suporte), área de conta do cliente (perfil, assinatura,
+LGPD, cripto da chave Pix), push no cliente (SW + opt-in + limpeza de subscription morta),
+templates de billing, correção de drift dos docs, página de status.
+
+---
+
+## ✅ SESSÃO 1 (Ondas 1–2) · ✅ SESSÃO 2 (Ondas 3a–3b) · ✅ SESSÃO 3 (Passo 0 + Ondas 5–6) · ✅ SESSÃO 4 (Onda 7)
 
 **Estado atual: 555 testes verdes (214 core · 6 db · 186 integrations · 64 worker · 85 web),
 typecheck exit 0 nos 6 pacotes, 260 arquivos, 13 commits.**

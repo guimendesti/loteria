@@ -104,11 +104,15 @@ export function requireRole(ctx: SessionLike, min: AdminRole): AdminRole {
 // ─── Permissões finas (SUPPORT ≠ FINANCE) ──────────────────────────────────────────────
 
 /**
- * Permissões usadas por `routers/admin/dashboard.ts` e `routers/admin/users.ts` (o
- * território desta tarefa). `admin/apostas.ts`, `admin/financeiro.ts`, `admin/config.ts`
- * e `admin/suporte.ts` (outro agente) devem ESTENDER este union type e os conjuntos
- * abaixo com as permissões deles (ex.: `'billing:refund'`, `'billing:invoice:write'`,
- * `'contests:reprocess'`, `'feature_flags:write'`) em vez de criar um sistema paralelo.
+ * Permissões usadas por `routers/admin/*.ts`. Todo router de backoffice ESTENDE este union
+ * type e os conjuntos abaixo em vez de criar um sistema paralelo.
+ *
+ * ⚠️ REGRA DE SEGURANÇA (não afrouxar): `ROLE_RANK[SUPPORT] === ROLE_RANK[FINANCE]`, então
+ * `adminProcedure('FINANCE')` SOZINHO deixa passar um ator SUPPORT (e vice-versa) — é o
+ * comportamento pretendido do gate GROSSO (papéis paralelos, ver docblock do módulo). Toda
+ * procedure cuja ação seja exclusiva de um dos dois papéis PRECISA, além do gate grosso,
+ * chamar `requirePermission(ctx, '...')` no corpo. Sem isso, SUPPORT e FINANCE viram o
+ * mesmo papel na prática.
  */
 export type AdminPermission =
   | 'metrics:read'
@@ -121,6 +125,14 @@ export type AdminPermission =
   | 'users:lgpd:export'
   | 'users:lgpd:anonymize'
   | 'audit:read'
+  /** Atendimento (SUPPORT): caixa de mensagens e histórico de notificações de um usuário (BO-50/51). */
+  | 'support:read'
+  /** Atendimento (SUPPORT): apagar e refazer `BetCheck` de um concurso/aposta (BO-21) — destrutivo. */
+  | 'checks:reprocess'
+  /** Financeiro (FINANCE): assinaturas, faturas, MRR, log de webhooks (BO-30/31/34/36). */
+  | 'billing:read'
+  /** Financeiro (FINANCE): retry de fatura e replay de webhook (BO-32/36) — mexe em cobrança. */
+  | 'billing:write'
 
 const VIEWER_PERMISSIONS: readonly AdminPermission[] = ['metrics:read', 'users:list']
 
@@ -131,14 +143,19 @@ const SUPPORT_PERMISSIONS: readonly AdminPermission[] = [
   'users:trial:grant', // D.1 — implícito em "ajustar plano manualmente" (conceder trial é um caso particular)
   'users:block:write', // D.1 — ação operacional de atendimento (ver users.ts sobre o que "bloquear" de fato faz hoje)
   'users:lgpd:export', // BO-14 — atender requisição LGPD é rotina de atendimento
+  'support:read', // BO-50/51 — triagem de atendimento
+  'checks:reprocess', // D.1 — "reprocessar conferência" está listado nas permissões de SUPPORT
   'audit:read',
 ]
 
 const FINANCE_PERMISSIONS: readonly AdminPermission[] = [
   ...VIEWER_PERMISSIONS,
   // FINANCE precisa localizar o usuário para relacionar com faturas/reembolsos (BO-11),
-  // mas NÃO ajusta plano, NÃO bloqueia, NÃO exporta dados LGPD — isso é atendimento (SUPPORT).
+  // mas NÃO ajusta plano, NÃO bloqueia, NÃO exporta dados LGPD, NÃO lê a caixa de suporte
+  // e NÃO reprocessa conferência — isso é atendimento (SUPPORT).
   'users:detail',
+  'billing:read', // BO-30/31/34/36
+  'billing:write', // BO-32/36 — exclusivo de FINANCE: SUPPORT não mexe em cobrança
   'audit:read',
 ]
 
