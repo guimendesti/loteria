@@ -80,6 +80,32 @@ typecheck exit 0 nos 6 pacotes, 260 arquivos, 13 commits.**
 **Onda 8 — Gerador e fechamentos (Épico 9)** — se couber; senão S5.
 **Depois:** Onda 9 ★ Bolão Manager (Épico 10) → Onda 10 OCR/IA → Onda 11 hardening/GA.
 
+## 🚀 PRODUÇÃO — no ar desde 03/08/2026
+
+**https://loteria.iauai.online** · VPS 76.13.172.16 ·  · Traefik compartilhado
+(rede , certresolver , entrypoint ) · Let's Encrypt válido até 01/11/2026.
+
+Serviços: postgres, redis, web, worker (migrate roda one-shot antes). Deploy: Already up to date..
+
+### Bugs de produção corrigidos durante o deploy (nenhum aparecia em dev)
+
+| # | Bug | Causa |
+|---|---|---|
+| 1 |  falhava | tailwind.config importava o índice do @lotopro/ui (JSX no jiti) |
+| 2 | Prisma quebrava em runtime | faltava binaryTarget  + binário  na imagem |
+| 3 | build exigia banco no ar | páginas públicas consultavam Prisma sem guard |
+| 4 | worker em crash-loop |  rejeita string vazia (docker injeta ) |
+| 5 | **API da Caixa dá 403 de IP de datacenter** | bloqueio por origem →  como fallback (risco RT2 do doc 01, mitigação já projetada) |
+| 6 | web sem engine do Prisma |  não rastreia  → cópia +  |
+
+### Pendências de produção
+
+- **P-prod-1**: sem  real → e-mails não saem (placeholder no .env).
+- **P-prod-2**: sem / → billing inativo; worker loga aviso e não registra o dunning.
+- **P-prod-3**: sem  → login social indisponível (e-mail/senha funciona).
+- **P-prod-4**: backfill histórico não rodado (só os 11 concursos mais recentes) — o espelho tem rate limit, exige throttle maior.
+- **P-prod-5**: espelho é serviço de terceiro sem SLA; avaliar proxy próprio fora de datacenter se a Caixa mantiver o bloqueio.
+
 ## Ambiente local
 
 ```bash
