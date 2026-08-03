@@ -1,0 +1,122 @@
+# LotoPro — produção. Publica via Traefik COMPARTILHADO já existente na VPS.
+#
+# Pré-requisitos na VPS (confirmar antes de subir — ver deploy/README.md):
+#   • Rede externa do Traefik  → variável TRAEFIK_NETWORK (padrão: traefik)
+#   • Nome do certresolver     → variável TRAEFIK_CERTRESOLVER (padrão: letsencrypt)
+#   • Entrypoint HTTPS         → variável TRAEFIK_ENTRYPOINT (padrão: websecure)
+# Descubra os valores reais com:
+#   docker network ls
+#   docker inspect <container-traefik> | grep -iE "certificatesresolvers|entrypoints"
+
+name: lotopro
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lotopro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+      POSTGRES_DB: ${POSTGRES_DB:-lotopro}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lotopro} -d ${POSTGRES_DB:-lotopro}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+
+  # Aplica migrations e seed uma vez, antes do web/worker subirem.
+  migrate:
+    build:
+      context: .
+      target: worker
+    restart: "no"
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    command: >
+      sh -c "pnpm -F @lotopro/db exec prisma migrate deploy &&
+             pnpm -F @lotopro/db seed"
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [internal]
+
+  web:
+    build:
+      context: .
+      target: web
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?defina BETTER_AUTH_SECRET no .env}
+      BETTER_AUTH_URL: https://${DOMAIN:-loteria.iauai.online}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      ASAAS_API_KEY: ${ASAAS_API_KEY:-}
+      ASAAS_WEBHOOK_TOKEN: ${ASAAS_WEBHOOK_TOKEN:-}
+    depends_on:
+      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    networks: [internal, traefik]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${TRAEFIK_NETWORK:-traefik}
+      - traefik.http.routers.lotopro.rule=Host(`${DOMAIN:-loteria.iauai.online}`)
+      - traefik.http.routers.lotopro.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}
+      - traefik.http.routers.lotopro.tls=true
+      - traefik.http.routers.lotopro.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}
+      - traefik.http.services.lotopro.loadbalancer.server.port=3000
+      # Redirect HTTP → HTTPS
+      - traefik.http.routers.lotopro-http.rule=Host(`${DOMAIN:-loteria.iauai.online}`)
+      - traefik.http.routers.lotopro-http.entrypoints=${TRAEFIK_ENTRYPOINT_HTTP:-web}
+      - traefik.http.routers.lotopro-http.middlewares=lotopro-https
+      - traefik.http.middlewares.lotopro-https.redirectscheme.scheme=https
+      - traefik.http.middlewares.lotopro-https.redirectscheme.permanent=true
+
+  worker:
+    build:
+      context: .
+      target: worker
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      SYNC_ENABLED: ${SYNC_ENABLED:-true}
+      HEALTH_PORT: 3001
+      RESEND_API_KEY: ${RESEND_API_KEY:-re_placeholder}
+      EMAIL_FROM: ${EMAIL_FROM:-LotoPro <nao-responda@loteria.iauai.online>}
+      ASAAS_API_KEY: ${ASAAS_API_KEY:-}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    networks: [internal]
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  internal:
+  traefik:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik}

@@ -56,9 +56,22 @@ export interface ResultsPageData {
   leastDrawn: NumberFrequency[]
 }
 
+/**
+ * ⚠️ Tolerante a banco indisponível POR DESIGN — o `next build` roda dentro da
+ * imagem Docker, sem banco. Retornando `null` a página é gerada com o estado
+ * "sem resultados" e o ISR (`revalidate = 300`) a preenche em produção.
+ */
 export const getResultsPageData = cache(async function getResultsPageData(
   slugParam: string,
 ): Promise<ResultsPageData | null> {
+  try {
+    return await queryResultsPageData(slugParam)
+  } catch {
+    return null
+  }
+})
+
+async function queryResultsPageData(slugParam: string): Promise<ResultsPageData | null> {
   const config = findLotteryConfig(slugParam)
   if (!config) return null
 
@@ -84,7 +97,7 @@ export const getResultsPageData = cache(async function getResultsPageData(
     mostDrawn,
     leastDrawn,
   }
-})
+}
 
 async function computeFrequencyStats(
   lotteryId: string,

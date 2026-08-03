@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { ALL_LOTTERIES, type LotteryConfig } from '@lotopro/core'
+import { ALL_LOTTERIES, findLotteryConfig, type LotteryConfig } from '@lotopro/core'
 import { NumberBall, Badge } from '@lotopro/ui'
 import { getResultsPageData, type ResultsContestRow } from './data'
 import { formatCents, formatDateBR, formatNumber } from '@/app/(marketing)/lib/format'
@@ -123,7 +123,22 @@ function PrizeTable({ contest }: { contest: ResultsContestRow }) {
 export default async function ResultadosModalidadePage({ params }: PageParams) {
   const { modalidade } = await params
   const data = await getResultsPageData(modalidade)
-  if (!data) notFound()
+
+  // Distingue "slug inexistente" (404 de verdade) de "modalidade válida, mas ainda
+  // sem dados" (banco vazio ou fora do ar — inclusive durante o `next build`, que
+  // roda sem banco). Sem essa distinção a página seria pré-renderizada como 404 e
+  // ficaria assim até o ISR revalidar. Ver data.ts.
+  if (!data) {
+    if (!findLotteryConfig(modalidade)) notFound()
+    return (
+      <main style={{ maxWidth: 720, margin: '0 auto', padding: '4rem 1.5rem', textAlign: 'center' }}>
+        <h1 style={{ fontSize: '1.5rem', marginBottom: '0.75rem' }}>Resultados a caminho</h1>
+        <p style={{ color: 'var(--ink-600)' }}>
+          Estamos carregando os resultados desta modalidade. Atualize a página em alguns instantes.
+        </p>
+      </main>
+    )
+  }
 
   const { config, lotteryName, recent, mostDrawn, leastDrawn } = data
   const latest = recent[0] ?? null

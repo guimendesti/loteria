@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { ALL_LOTTERIES, type LotteryConfig } from '@lotopro/core'
+import { ALL_LOTTERIES, findLotteryConfig, type LotteryConfig } from '@lotopro/core'
 import { getCheckerPageData } from './data'
 import { PublicChecker } from './PublicChecker'
 import type { CheckerContestDTO } from './types'
@@ -51,7 +51,20 @@ function isPublicCheckerSupported(config: LotteryConfig): boolean {
 export default async function ConferirModalidadePage({ params }: PageParams) {
   const { modalidade } = await params
   const data = await getCheckerPageData(modalidade)
-  if (!data) notFound()
+
+  // Ver nota idêntica em resultados/[modalidade]/page.tsx: slug inválido é 404,
+  // modalidade válida sem dados é estado transitório (build sem banco / ISR).
+  if (!data) {
+    if (!findLotteryConfig(modalidade)) notFound()
+    return (
+      <main style={{ maxWidth: 720, margin: '0 auto', padding: '4rem 1.5rem', textAlign: 'center' }}>
+        <h1 style={{ fontSize: '1.5rem', marginBottom: '0.75rem' }}>Conferidor a caminho</h1>
+        <p style={{ color: 'var(--ink-600)' }}>
+          Estamos carregando os concursos desta modalidade. Atualize a página em alguns instantes.
+        </p>
+      </main>
+    )
+  }
 
   const { config, lotteryName, contests } = data
   const supported = isPublicCheckerSupported(config)

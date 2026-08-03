@@ -24,7 +24,25 @@ interface TeaserResult {
   isAccumulated: boolean
 }
 
+/**
+ * ⚠️ Tolerante a banco indisponível POR DESIGN.
+ *
+ * Esta página é pré-renderizada no `next build`, que roda dentro da imagem Docker —
+ * ambiente onde NÃO há banco. Sem este guard o build inteiro falha
+ * ("Error occurred prerendering page /"). Com ele, o build gera a página com a
+ * seção vazia e o ISR (`revalidate = 300`) a preenche no primeiro acesso em
+ * produção. Vale também como resiliência: uma queda do Postgres degrada a home
+ * em vez de derrubá-la.
+ */
 async function getTeaserResults(): Promise<TeaserResult[]> {
+  try {
+    return await queryTeaserResults()
+  } catch {
+    return []
+  }
+}
+
+async function queryTeaserResults(): Promise<TeaserResult[]> {
   const lotteries = await prisma.lottery.findMany({
     where: { slug: { in: [...TEASER_LOTTERIES] } },
     select: { id: true, slug: true, name: true },

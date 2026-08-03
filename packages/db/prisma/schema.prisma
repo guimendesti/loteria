@@ -4,6 +4,10 @@
 
 generator client {
   provider = "prisma-client-js"
+  // `native` cobre a máquina de dev; o alvo Debian/OpenSSL 3 é o da imagem de
+  // produção (node:20-slim = bookworm). Sem isso o Prisma assume openssl-1.1.x
+  // e falha em runtime com "libssl.so.1.1: cannot open shared object file".
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
 }
 
 datasource db {

@@ -35,9 +35,21 @@ export interface CheckerPageData {
   contests: CheckerContestRow[]
 }
 
+/**
+ * ⚠️ Tolerante a banco indisponível POR DESIGN — ver nota idêntica em
+ * `resultados/[modalidade]/data.ts`. O build acontece sem banco.
+ */
 export const getCheckerPageData = cache(async function getCheckerPageData(
   slugParam: string,
 ): Promise<CheckerPageData | null> {
+  try {
+    return await queryCheckerPageData(slugParam)
+  } catch {
+    return null
+  }
+})
+
+async function queryCheckerPageData(slugParam: string): Promise<CheckerPageData | null> {
   const config = findLotteryConfig(slugParam)
   if (!config) return null
 
@@ -55,4 +67,4 @@ export const getCheckerPageData = cache(async function getCheckerPageData(
   })
 
   return { config, lotteryName: lottery.name, contests }
-})
+}
