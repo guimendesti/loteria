@@ -43,7 +43,7 @@ Se um dia for preciso migrar para NestJS ou expor uma API dedicada, o domínio v
 | **Linguagem** | TypeScript (strict) | Tipagem ponta a ponta |
 | **Framework web** | Next.js 15 (App Router, RSC) | SSR para SEO + SPA para painéis |
 | **RPC** | tRPC v11 | Tipos compartilhados sem codegen |
-| **UI** | Tailwind CSS v4 + shadcn/ui + Radix | Velocidade + acessibilidade nativa |
+| **UI** | Tailwind CSS v3.4 + shadcn/ui + Radix | Velocidade + acessibilidade nativa. ⚠️ Migração para v4 é pendência, não estado atual. |
 | **Estado servidor** | TanStack Query (via tRPC) | Cache, revalidação, otimista |
 | **Formulários** | React Hook Form + Zod | Validação compartilhada cliente/servidor |
 | **Gráficos** | Recharts | Suficiente; leve; sem licença |

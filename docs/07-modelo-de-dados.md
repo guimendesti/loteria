@@ -267,20 +267,22 @@ model Plan {
 }
 
 model Subscription {
-  id                  String   @id @default(cuid())
-  userId              String   @unique
-  planId              String
-  status              SubStatus
-  billingCycle        BillingCycle
-  paymentMethod       PaymentMethod
+  id                    String   @id @default(cuid())
+  userId                String   @unique
+  planId                String
+  status                SubStatus
+  billingCycle          BillingCycle
+  paymentMethod         PaymentMethod
   gatewaySubscriptionId String?              // ID no Asaas
-  currentPeriodStart  DateTime
-  currentPeriodEnd    DateTime
-  trialEndsAt         DateTime?
-  cancelAtPeriodEnd   Boolean  @default(false)
-  canceledAt          DateTime?
-  cancelReason        String?
-  createdAt           DateTime @default(now())
+  gatewayCustomerId     String?              // ID do customer no Asaas — evita recriar a cada assinatura
+  pendingPlanId         String?              // Downgrade agendado: plano que entra no fim do período
+  currentPeriodStart    DateTime
+  currentPeriodEnd      DateTime
+  trialEndsAt           DateTime?
+  cancelAtPeriodEnd     Boolean  @default(false)
+  canceledAt            DateTime?
+  cancelReason          String?
+  createdAt             DateTime @default(now())
 
   user    User    @relation(fields: [userId], references: [id])
   plan    Plan    @relation(fields: [planId], references: [id])
@@ -288,22 +290,23 @@ model Subscription {
 
   @@index([status, currentPeriodEnd])
 }
-enum SubStatus     { TRIALING  ACTIVE  PAST_DUE  CANCELED  EXPIRED }
+enum SubStatus     { PENDING  TRIALING  ACTIVE  PAST_DUE  CANCELED  EXPIRED }
 enum BillingCycle  { MONTHLY  YEARLY }
 enum PaymentMethod { PIX_AUTOMATIC  CREDIT_CARD  BOLETO }
 
 model Invoice {
-  id             String @id @default(cuid())
-  subscriptionId String
-  amountCents    BigInt
-  status         InvoiceStatus
-  method         PaymentMethod
+  id               String @id @default(cuid())
+  subscriptionId   String
+  amountCents      BigInt
+  status           InvoiceStatus
+  method           PaymentMethod
   gatewayInvoiceId String? @unique
-  dueAt          DateTime
-  paidAt         DateTime?
-  attempts       Int      @default(0)
-  failureReason  String?
-  createdAt      DateTime @default(now())
+  invoiceUrl       String? // Link da fatura no gateway (CL-106 — download)
+  dueAt            DateTime
+  paidAt           DateTime?
+  attempts         Int      @default(0)
+  failureReason    String?
+  createdAt        DateTime @default(now())
 
   subscription   Subscription @relation(fields: [subscriptionId], references: [id])
   @@index([status, dueAt])
@@ -373,6 +376,7 @@ model BetCheck {
   extraHits    Int?
   prizeTier    Int?                            // null = não premiado
   prizeCents   BigInt   @default(0)
+  tierCounts   Json?                           // v2 — decomposição multi-faixa: [{tier, count, prizeCents:string}]
   drawIndex    Int?                            // Dupla Sena
   checkedAt    DateTime @default(now())
 
@@ -538,18 +542,19 @@ model NotificationPreference {
 }
 
 model Notification {
-  id         String   @id @default(cuid())
-  userId     String
-  channel    NotificationChannel
-  type       String                             // "bet.prized" | "contest.accumulated" | ...
-  title      String
-  body       String
-  payload    Json?
-  status     NotificationStatus @default(QUEUED)
-  sentAt     DateTime?
-  readAt     DateTime?
-  error      String?
-  createdAt  DateTime @default(now())
+  id        String              @id @default(cuid())
+  userId    String
+  channel   NotificationChannel
+  type      String                             // "bet.prized" | "contest.accumulated" | ...
+  title     String
+  body      String
+  payload   Json?
+  dedupeKey String?             @unique       // Idempotência: tipo:userId:contexto:canal
+  status    NotificationStatus  @default(QUEUED)
+  sentAt    DateTime?
+  readAt    DateTime?
+  error     String?
+  createdAt DateTime @default(now())
 
   @@index([userId, createdAt(sort: Desc)])
   @@index([status, createdAt])

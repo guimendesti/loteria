@@ -95,6 +95,22 @@ pnpm typecheck
 pnpm lint
 ```
 
+## Skills do projeto (`.claude/skills/`)
+
+Conhecimento destilado do que já foi feito — reaproveitável aqui e em outros projetos:
+
+| Skill | Quando usar |
+|---|---|
+| `deploy-monorepo-vps` | Containerizar/implantar monorepo pnpm com Traefik; depurar Prisma/Next standalone/env em container. **7 bugs reais já diagnosticados.** |
+| `orquestracao-ondas` | Coordenar vários subagentes em paralelo; escolher modelo por demanda; recuperar agente morto. |
+| `loterias-caixa-br` | Domínio das loterias federais: API e seus bloqueios, schema real, cálculo de preço/prêmio/rateio, limites jurídicos. |
+
+## Estado e continuidade
+
+**[ORQUESTRACAO.md](ORQUESTRACAO.md) é a fonte da verdade** sobre o que está pronto, o que está
+pendente (numerado, com dono) e o roteiro da próxima sessão. Leia-o antes de começar qualquer
+trabalho — ele substitui a memória de contexto entre sessões.
+
 ## Índice da documentação
 
 Ver [README.md](README.md). Os mais consultados no dia a dia:

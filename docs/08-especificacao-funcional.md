@@ -325,7 +325,7 @@ Acesso restrito por RBAC. Toda ação registrada em `audit_logs`.
 | SY-10 | Cron `accumulated-alert` — verifica limiar e dispara notificação | P0 |
 | SY-11 | Cron `cutoff-reminder` — avisa antes do fechamento das apostas | P1 |
 | SY-12 | Cron `cleanup` — expira convites, arquiva notificações antigas, purga soft-deletes vencidos | P1 |
-| SY-13 | Endpoint `/api/webhooks/asaas` com validação HMAC e idempotência | P0 |
+| SY-13 | Endpoint `/api/webhooks/asaas` com validação de token estático (header `asaas-access-token`, comparação constant-time) e idempotência | P0 |
 | SY-14 | Healthcheck `/api/health` (DB, Redis, fila, último sync) | P0 |
 | SY-15 | Circuit breaker e fallback entre provedores de resultado | P0 |
 

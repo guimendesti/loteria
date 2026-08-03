@@ -3,7 +3,7 @@
 // Não redesenhar aqui — mudanças de modelo entram primeiro na documentação.
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
   // `native` cobre a máquina de dev; o alvo Debian/OpenSSL 3 é o da imagem de
   // produção (node:20-slim = bookworm). Sem isso o Prisma assume openssl-1.1.x
   // e falha em runtime com "libssl.so.1.1: cannot open shared object file".
@@ -291,7 +291,9 @@ model Subscription {
   status                SubStatus
   billingCycle          BillingCycle
   paymentMethod         PaymentMethod
-  gatewaySubscriptionId String? // ID no Asaas
+  gatewaySubscriptionId String?
+  gatewayCustomerId     String? // id do customer no Asaas — evita recriar a cada assinatura
+  pendingPlanId         String? // downgrade agendado: plano que entra no fim do período // ID no Asaas
   currentPeriodStart    DateTime
   currentPeriodEnd      DateTime
   trialEndsAt           DateTime?
@@ -308,6 +310,7 @@ model Subscription {
 }
 
 enum SubStatus {
+  PENDING // criada, aguardando 1º pagamento confirmar
   TRIALING
   ACTIVE
   PAST_DUE
@@ -333,6 +336,7 @@ model Invoice {
   status           InvoiceStatus
   method           PaymentMethod
   gatewayInvoiceId String?       @unique
+  invoiceUrl       String? // link da fatura no gateway (CL-106 — download)
   dueAt            DateTime
   paidAt           DateTime?
   attempts         Int           @default(0)
@@ -608,7 +612,7 @@ model Notification {
   title     String
   body      String
   payload   Json?
-  dedupeKey  String?  @unique // idempotência: tipo:userId:contexto:canal — ver apps/worker/src/jobs/notify.ts
+  dedupeKey String?             @unique // idempotência: tipo:userId:contexto:canal — ver apps/worker/src/jobs/notify.ts
   status    NotificationStatus  @default(QUEUED)
   sentAt    DateTime?
   readAt    DateTime?

@@ -91,6 +91,8 @@ frustrar o usuário casual.
 | G8 | Tentou backtesting | Ricardo | **Pro** |
 | G9 | Criou o 6º bolão ou passou de 30 participantes | Sandra | **Pro** |
 | G10 | Quis notificação por WhatsApp | Todos | **Pro** |
+| G11 | Plano Free sem acesso ao assistente de IA | Todos | **Pro** — upsell core |
+| G12 | Cota mensal de mensagens de IA esgotada | Todos | Pacote 200 mensagens IA (§5.3) ou **Pro** |
 
 **Regras de UX do paywall (importantes para não queimar o usuário):**
 - O limite é sempre comunicado **antes** de o usuário perder trabalho. Ex.: ao criar o 20º jogo, avisar

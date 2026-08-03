@@ -26,10 +26,9 @@ import {
   USAGE_METRICS,
   type Entitlements,
   type PlanSlug,
-} from '../src/entitlements/index'
+} from '@lotopro/core'
 // Leitura do JSON REAL que o seed grava em `plans.entitlements`.
-// Import exclusivo de teste — `packages/core` não depende de `packages/db`.
-import { plans as seedPlans } from '../../db/src/seed-data/plans'
+import { plans as seedPlans } from '../src/seed-data/plans'
 
 const free = ENTITLEMENTS.free
 const premium = ENTITLEMENTS.premium
