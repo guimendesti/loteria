@@ -7,8 +7,10 @@
 FROM node:20-slim AS base
 # corepack falha com verificação de assinatura em alguns ambientes — npm é mais estável
 RUN npm install -g pnpm@9.15.9
-# node:20-slim (Debian) traz openssl e usa glibc — engines do Prisma mais estáveis
-# que no Alpine/musl, e uma dependência de rede a menos no build.
+# O Prisma precisa do BINÁRIO openssl para detectar a versão da libssl; sem ele
+# assume openssl-1.1.x e falha com "libssl.so.1.1: cannot open shared object file",
+# mesmo com binaryTargets correto no schema. (node:20-slim traz libssl3, não o binário.)
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
