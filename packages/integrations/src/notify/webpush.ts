@@ -17,15 +17,14 @@
  * `RequestOptions.vapidDetails` em @types/web-push). Isso mantém `WebPushSender` sem
  * estado mutável global e seguro para múltiplas instâncias no mesmo processo.
  *
- * DECISÃO — contrato de erro "subscription morta" (404/410): a interface `PushSendResult`
- * (./types.ts) só tem `{ ok, error? }` — não tem um campo booleano tipo
- * `shouldDeleteSubscription`. `types.ts` é território de outro dono nesta tarefa, então NÃO
- * alteramos a interface. Em vez disso, embutimos o código no `error`: `"gone:404"` /
- * `"gone:410"`. `apps/worker/src/jobs/notify.ts` pode detectar isso com
- * `error?.startsWith('gone:')` e apagar a `PushSubscription` expirada antes de tentar de
- * novo. MELHORIA SUGERIDA para o orquestrador: promover isso a um campo tipado em
- * `PushSendResult` (ex.: `shouldDeleteSubscription?: boolean`) quando `types.ts` puder ser
- * alterado — o parsing de string é um contrato frágil, serve como ponte até lá.
+ * DECISÃO — contrato de erro "subscription morta" (404/410) — RESOLVIDO (P4a): a interface
+ * `PushSendResult` (./types.ts) agora tem o campo tipado `shouldDeleteSubscription?: boolean`,
+ * setado `true` aqui quando o provedor devolve 404/410. `apps/worker/src/jobs/notify.ts`
+ * apaga a `PushSubscription` correspondente ao ver esse campo e trata o envio como "nada
+ * para enviar" (não como falha permanente). O `error` continua preenchido com o prefixo
+ * `"gone:<statusCode>"` também — mantido por compatibilidade com log/depuração (era o único
+ * sinal antes deste campo existir), mas o campo booleano é o contrato oficial agora; não
+ * fazer parsing de `error.startsWith('gone:')` em código novo.
  */
 import * as webpush from 'web-push'
 import type { PushMessage, PushSendResult, PushSender } from './types'
@@ -158,9 +157,9 @@ export class WebPushSender implements PushSender {
     } catch (error) {
       const status = extractStatusCode(error)
       if (isGoneStatus(status)) {
-        // Ver decisão no cabeçalho do arquivo — "gone:<statusCode>" é o contrato-ponte
-        // até `PushSendResult` ganhar um campo tipado para isso.
-        return { ok: false, error: `gone:${status}` }
+        // Ver decisão no cabeçalho do arquivo — `shouldDeleteSubscription` é o contrato
+        // oficial (P4a); `error: "gone:<statusCode>"` continua junto por compatibilidade.
+        return { ok: false, error: `gone:${status}`, shouldDeleteSubscription: true }
       }
       return { ok: false, error: extractMessage(error) }
     }

@@ -117,6 +117,8 @@ export function createNotifyPrismaAdapter(prisma: PrismaClient): NotifyPrisma {
           where: { userId: where.userId },
           select: { endpoint: true, p256dh: true, auth: true },
         }),
+      // P4a — subscription morta (404/410): ver decisão em `jobs/notify.ts`.
+      deleteMany: ({ where }) => prisma.pushSubscription.deleteMany({ where: { endpoint: where.endpoint } }),
     },
     notification: {
       // P4 RESOLVIDO (S3): `Notification.dedupeKey` agora é coluna com UNIQUE

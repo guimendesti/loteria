@@ -64,6 +64,17 @@ export interface PushSendResult {
   ok: boolean
   /** Presente quando `ok = false` — motivo legível, vira `Notification.error`. */
   error?: string
+  /**
+   * `true` quando o motivo de `ok = false` é subscription MORTA (404/410 devolvido pelo
+   * provedor push — o endpoint não existe mais do lado do navegador/SO). Sinal para o
+   * chamador (`apps/worker/jobs/notify.ts`): apague a `PushSubscription` correspondente e
+   * NÃO trate isso como falha permanente de envio — o canal em si funcionou, só o
+   * destinatário não existe mais (dispositivo desinstalado, permissão revogada etc.).
+   *
+   * Campo tipado (P4a) — antes disso o único sinal era o prefixo de string `"gone:<status>"`
+   * em `error` (ver `webpush.ts`, que ainda preenche os dois por compatibilidade/log).
+   */
+  shouldDeleteSubscription?: boolean
 }
 
 export interface PushSender {

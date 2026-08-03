@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   betCheckedTemplate,
   betPrizedTemplate,
+  billingDowngradedTemplate,
+  billingPaymentFailedTemplate,
+  billingTrialEndedTemplate,
   contestAccumulatedTemplate,
   formatMillionsBRL,
   poolBetPlacedTemplate,
@@ -85,6 +88,70 @@ describe('pool.* — placeholders (doc 9.6, ainda sem job que enfileire)', () =>
     const result = poolPrizedTemplate({ poolName: 'Escritório', memberShareText: 'R$ 340,00' })
     expect(result.subject).toBe('🎉 O bolão "Escritório" foi premiado!')
     expect(result.text).toBe('Sua parte: R$ 340,00. Veja o rateio.')
+  })
+})
+
+describe('billingPaymentFailedTemplate — doc 9.6 "Cobrança falhou" (P4b)', () => {
+  it('produz o título e corpo EXATOS do doc, sem payload', () => {
+    const result = billingPaymentFailedTemplate()
+    expect(result.subject).toBe('Não conseguimos renovar sua assinatura')
+    expect(result.text).toBe('Atualize seu meio de pagamento para continuar no Premium.')
+  })
+
+  it('título respeita o limite de 60 caracteres (doc 9.6)', () => {
+    expect(billingPaymentFailedTemplate().subject.length).toBeLessThanOrEqual(60)
+  })
+
+  it('aceita planName customizado (payload opcional)', () => {
+    const result = billingPaymentFailedTemplate({ planName: 'Essencial' })
+    expect(result.subject).toBe('Não conseguimos renovar sua assinatura')
+    expect(result.text).toBe('Atualize seu meio de pagamento para continuar no Essencial.')
+  })
+})
+
+describe('billingDowngradedTemplate (P4b)', () => {
+  it('reason: payment_failed', () => {
+    const result = billingDowngradedTemplate({ targetPlanName: 'Grátis', reason: 'payment_failed' })
+    expect(result.subject).toBe('Seu plano agora é Grátis')
+    expect(result.text).toBe(
+      'Como a cobrança não foi confirmada, seu acesso passou para o plano Grátis. ' +
+        'Nenhum dado foi apagado: seus jogos e seu histórico continuam disponíveis.',
+    )
+  })
+
+  it('reason: canceled', () => {
+    const result = billingDowngradedTemplate({ targetPlanName: 'Grátis', reason: 'canceled' })
+    expect(result.text).toBe(
+      'Seu cancelamento foi concluído e você está no plano Grátis. ' +
+        'Nenhum dado foi apagado: seus jogos e seu histórico continuam disponíveis.',
+    )
+  })
+
+  it('reason: scheduled_downgrade', () => {
+    const result = billingDowngradedTemplate({ targetPlanName: 'Essencial', reason: 'scheduled_downgrade' })
+    expect(result.text).toBe(
+      'A troca que você agendou foi aplicada: você está no plano Essencial. ' +
+        'Nenhum dado foi apagado: seus jogos e seu histórico continuam disponíveis.',
+    )
+  })
+
+  it('título respeita o limite de 60 caracteres (doc 9.6)', () => {
+    expect(billingDowngradedTemplate({ targetPlanName: 'Grátis', reason: 'canceled' }).subject.length).toBeLessThanOrEqual(60)
+  })
+})
+
+describe('billingTrialEndedTemplate (P4b)', () => {
+  it('produz título e corpo informando o fim do trial, sem apagar dado', () => {
+    const result = billingTrialEndedTemplate({ targetPlanName: 'Grátis' })
+    expect(result.subject).toBe('Seu plano agora é Grátis')
+    expect(result.text).toBe(
+      'Seu período de teste terminou e você voltou para o plano Grátis. ' +
+        'Nenhum dado foi apagado: seus jogos e seu histórico continuam disponíveis.',
+    )
+  })
+
+  it('título respeita o limite de 60 caracteres (doc 9.6)', () => {
+    expect(billingTrialEndedTemplate({ targetPlanName: 'Grátis' }).subject.length).toBeLessThanOrEqual(60)
   })
 })
 

@@ -28,8 +28,14 @@ export {
   poolPaymentPendingTemplate,
   poolBetPlacedTemplate,
   poolPrizedTemplate,
+  billingPaymentFailedTemplate,
+  billingDowngradedTemplate,
+  billingTrialEndedTemplate,
   renderPlainTemplate,
   formatMillionsBRL,
+  type BillingPaymentFailedTemplatePayload,
+  type BillingDowngradedTemplatePayload,
+  type BillingTrialEndedTemplatePayload,
 } from './templates'
 
 export {

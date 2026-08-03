@@ -147,3 +147,73 @@ export function poolPrizedTemplate(payload: PoolPrizedTemplatePayload): Notifica
   const text = `Sua parte: ${payload.memberShareText}. Veja o rateio.`
   return renderTemplate(subject, text)
 }
+
+// ─── billing.* — cobrança e mudanças de plano (P4b) ────────────────────────────
+//
+// `billing.payment_failed` é a linha "Cobrança falhou" do doc 9.6 — texto LITERAL, sem
+// interpolação (o doc não parametriza). `billing.downgraded`/`billing.trial_ended` não têm
+// linha própria no doc (só existem em `apps/worker/jobs/billing-dunning.ts`, que hoje monta
+// o título/corpo à mão OUTSIDE deste pacote) — os textos abaixo seguem o MESMO tom (docs/09
+// §9.6: sem promessa, sem urgência artificial, título ≤60 caracteres) e a mesma redação já
+// usada por aquele job, só formalizada aqui como template reaproveitável por `notify.ts`.
+
+export interface BillingPaymentFailedTemplatePayload {
+  /**
+   * Nome do plano em risco de cancelamento — o texto EXATO do doc 9.6 já embute "Premium"
+   * ("... continuar no Premium"). O payload que `billing-dunning.ts` enfileira hoje
+   * (`invoiceId`/`amountCents`/`daysOverdue`/`downgradeInDays`) não carrega o nome do
+   * plano atual, então este campo é opcional — ausente, cai no texto literal do doc.
+   */
+  planName?: string
+}
+
+/** doc 9.6, linha "Cobrança falhou" — título e corpo TRANSCRITOS, não reformule. */
+export function billingPaymentFailedTemplate(
+  payload: BillingPaymentFailedTemplatePayload = {},
+): NotificationTemplateOutput {
+  const planName = payload.planName ?? 'Premium'
+  const subject = 'Não conseguimos renovar sua assinatura'
+  const text = `Atualize seu meio de pagamento para continuar no ${planName}.`
+  return renderTemplate(subject, text)
+}
+
+export interface BillingDowngradedTemplatePayload {
+  /** Plano para onde a assinatura caiu — docs/05 §5.4: downgrade nunca apaga dado. */
+  targetPlanName: string
+  reason: 'payment_failed' | 'canceled' | 'scheduled_downgrade'
+}
+
+const BILLING_DOWNGRADE_REASON_TEXT: Record<
+  BillingDowngradedTemplatePayload['reason'],
+  (planName: string) => string
+> = {
+  payment_failed: (planName) => `Como a cobrança não foi confirmada, seu acesso passou para o plano ${planName}.`,
+  canceled: (planName) => `Seu cancelamento foi concluído e você está no plano ${planName}.`,
+  scheduled_downgrade: (planName) => `A troca que você agendou foi aplicada: você está no plano ${planName}.`,
+}
+
+/**
+ * Cobre os 3 motivos de downgrade que viram `type: "billing.downgraded"` em
+ * `billing-dunning.ts` (`payment_failed` | `canceled` | `scheduled_downgrade` — fim de
+ * trial é um `type` próprio, `billingTrialEndedTemplate` abaixo). Título neutro (sem "você
+ * perdeu"), corpo sempre reforça que nenhum dado foi apagado.
+ */
+export function billingDowngradedTemplate(payload: BillingDowngradedTemplatePayload): NotificationTemplateOutput {
+  const subject = `Seu plano agora é ${payload.targetPlanName}`
+  const reasonText = BILLING_DOWNGRADE_REASON_TEXT[payload.reason](payload.targetPlanName)
+  const text = `${reasonText} Nenhum dado foi apagado: seus jogos e seu histórico continuam disponíveis.`
+  return renderTemplate(subject, text)
+}
+
+export interface BillingTrialEndedTemplatePayload {
+  /** Plano para onde o usuário volta ao fim do trial (normalmente "Grátis"). */
+  targetPlanName: string
+}
+
+export function billingTrialEndedTemplate(payload: BillingTrialEndedTemplatePayload): NotificationTemplateOutput {
+  const subject = `Seu plano agora é ${payload.targetPlanName}`
+  const text =
+    `Seu período de teste terminou e você voltou para o plano ${payload.targetPlanName}. ` +
+    'Nenhum dado foi apagado: seus jogos e seu histórico continuam disponíveis.'
+  return renderTemplate(subject, text)
+}

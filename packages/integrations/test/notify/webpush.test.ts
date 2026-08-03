@@ -95,7 +95,7 @@ describe('WebPushSender — caminho feliz', () => {
 })
 
 describe('WebPushSender — erros', () => {
-  it('HTTP 410 (subscription expirada) vira { ok: false, error: "gone:410" }', async () => {
+  it('HTTP 410 (subscription expirada) vira { ok: false, error: "gone:410", shouldDeleteSubscription: true }', async () => {
     const sendNotification = vi.fn<WebPushImplLike['sendNotification']>(async () => {
       throw new WebPushErrorFake(410)
     })
@@ -103,10 +103,10 @@ describe('WebPushSender — erros', () => {
 
     const result = await sender.send(message)
 
-    expect(result).toEqual({ ok: false, error: 'gone:410' })
+    expect(result).toEqual({ ok: false, error: 'gone:410', shouldDeleteSubscription: true })
   })
 
-  it('HTTP 404 (endpoint não encontrado) vira { ok: false, error: "gone:404" }', async () => {
+  it('HTTP 404 (endpoint não encontrado) vira { ok: false, error: "gone:404", shouldDeleteSubscription: true }', async () => {
     const sendNotification = vi.fn<WebPushImplLike['sendNotification']>(async () => {
       throw new WebPushErrorFake(404)
     })
@@ -114,7 +114,7 @@ describe('WebPushSender — erros', () => {
 
     const result = await sender.send(message)
 
-    expect(result).toEqual({ ok: false, error: 'gone:404' })
+    expect(result).toEqual({ ok: false, error: 'gone:404', shouldDeleteSubscription: true })
   })
 
   it('erro genérico (statusCode diferente de 404/410) vira { ok: false, error: <mensagem> }', async () => {

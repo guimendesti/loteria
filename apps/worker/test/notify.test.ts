@@ -44,6 +44,15 @@ function createFakeDb() {
     },
     pushSubscription: {
       findMany: async ({ where }) => pushSubscriptions.get(where.userId) ?? [],
+      // P4a — espelha `deleteMany` idempotente por `endpoint` (não lança se não achar nada),
+      // varrendo todos os usuários (o adapter real filtra só por `endpoint`, que é @unique).
+      deleteMany: async ({ where }) => {
+        for (const [userId, subs] of pushSubscriptions) {
+          const filtered = subs.filter((s) => s.endpoint !== where.endpoint)
+          if (filtered.length !== subs.length) pushSubscriptions.set(userId, filtered)
+        }
+        return { count: 0 }
+      },
     },
     notification: {
       findFirst: async ({ where }) => {
@@ -344,6 +353,141 @@ describe('createNotifyJob', () => {
     const pushOutcome = result.channels.find((c) => c.channel === NotificationChannel.PUSH)
     expect(pushOutcome?.status).toBe(NotificationStatus.SENT)
     expect(push.sent).toHaveLength(1)
+  })
+
+  // ─── P4a — subscription morta (404/410) ───────────────────────────────────────
+
+  it('push: subscription morta (shouldDeleteSubscription) é apagada e NÃO grava Notification FAILED', async () => {
+    const db = createFakeDb()
+    db.users.set(USER_ID, { id: USER_ID, email: 'user@example.com' })
+    db.pushSubscriptions.set(USER_ID, [{ endpoint: 'https://push.example/dead', p256dh: 'p', auth: 'a' }])
+    const push = fakePushSender({ ok: false, error: 'gone:410', shouldDeleteSubscription: true })
+    const job = createNotifyJob({ prisma: db.prisma, emailSender: fakeEmailSender(), pushSender: push })
+
+    const result = await job(baseJob())
+
+    expect(result.channels.some((c) => c.channel === NotificationChannel.PUSH)).toBe(false)
+    expect(db.pushSubscriptions.get(USER_ID)).toEqual([])
+    expect(db.notifications.some((n) => n.channel === NotificationChannel.PUSH)).toBe(false)
+  })
+
+  it('push: fallback por prefixo "gone:" no error (sem o campo tipado) também apaga a subscription', async () => {
+    const db = createFakeDb()
+    db.users.set(USER_ID, { id: USER_ID, email: 'user@example.com' })
+    db.pushSubscriptions.set(USER_ID, [{ endpoint: 'https://push.example/dead2', p256dh: 'p', auth: 'a' }])
+    const push = fakePushSender({ ok: false, error: 'gone:404' })
+    const job = createNotifyJob({ prisma: db.prisma, emailSender: fakeEmailSender(), pushSender: push })
+
+    const result = await job(baseJob())
+
+    expect(result.channels.some((c) => c.channel === NotificationChannel.PUSH)).toBe(false)
+    expect(db.pushSubscriptions.get(USER_ID)).toEqual([])
+  })
+
+  it('push: depois da subscription morta apagada, um retry (mesmo dedupeKey) não tenta enviar de novo', async () => {
+    const db = createFakeDb()
+    db.users.set(USER_ID, { id: USER_ID, email: 'user@example.com' })
+    db.pushSubscriptions.set(USER_ID, [{ endpoint: 'https://push.example/dead3', p256dh: 'p', auth: 'a' }])
+    const push = fakePushSender({ ok: false, error: 'gone:410', shouldDeleteSubscription: true })
+    const job = createNotifyJob({ prisma: db.prisma, emailSender: fakeEmailSender(), pushSender: push })
+
+    await job(baseJob())
+    await job(baseJob()) // retry do BullMQ com o mesmo job.data
+
+    // 1ª chamada: subscription existe, pushSender.send é chamado (devolve "gone") e apaga a
+    // linha. 2ª chamada: subscription já não existe, cai no early-return de "sem subscription"
+    // (subscriptions.length === 0) — pushSender.send NÃO é chamado de novo.
+    expect(push.sent).toHaveLength(1)
+    expect(db.notifications.some((n) => n.channel === NotificationChannel.PUSH)).toBe(false)
+  })
+})
+
+// ─── P4b — templates de billing roteados (antes caíam no fallback genérico) ─────
+
+describe('createNotifyJob — templates de billing (P4b)', () => {
+  it('billing.payment_failed: e-mail usa o texto EXATO de docs/09 §9.6 ("Cobrança falhou")', async () => {
+    const db = createFakeDb()
+    db.users.set(USER_ID, { id: USER_ID, email: 'user@example.com' })
+    const email = fakeEmailSender()
+    const job = createNotifyJob({ prisma: db.prisma, emailSender: email, pushSender: fakePushSender({ ok: false }) })
+
+    await job(
+      baseJob({
+        type: 'billing.payment_failed',
+        title: 'Não conseguimos confirmar o pagamento da sua assinatura',
+        body: 'texto inline do job (billing-dunning.ts) — não deve aparecer no e-mail',
+        payload: { invoiceId: 'inv-1', amountCents: '9990', daysOverdue: 3, downgradeInDays: 4 },
+      }),
+    )
+
+    expect(email.sent).toHaveLength(1)
+    expect(email.sent[0]?.subject).toBe('Não conseguimos renovar sua assinatura')
+    expect(email.sent[0]?.text).toBe('Atualize seu meio de pagamento para continuar no Premium.')
+  })
+
+  it('billing.downgraded: roteia pelo `reason` do payload (ex.: payment_failed)', async () => {
+    const db = createFakeDb()
+    db.users.set(USER_ID, { id: USER_ID, email: 'user@example.com' })
+    const email = fakeEmailSender()
+    const job = createNotifyJob({ prisma: db.prisma, emailSender: email, pushSender: fakePushSender({ ok: false }) })
+
+    await job(
+      baseJob({
+        type: 'billing.downgraded',
+        title: 'Seu plano agora é Grátis',
+        body: 'texto inline do job',
+        payload: { reason: 'payment_failed', planSlug: 'free', targetPlanName: 'Grátis' },
+      }),
+    )
+
+    expect(email.sent).toHaveLength(1)
+    expect(email.sent[0]?.subject).toBe('Seu plano agora é Grátis')
+    expect(email.sent[0]?.text).toBe(
+      'Como a cobrança não foi confirmada, seu acesso passou para o plano Grátis. ' +
+        'Nenhum dado foi apagado: seus jogos e seu histórico continuam disponíveis.',
+    )
+  })
+
+  it('billing.trial_ended: roteia para o template dedicado', async () => {
+    const db = createFakeDb()
+    db.users.set(USER_ID, { id: USER_ID, email: 'user@example.com' })
+    const email = fakeEmailSender()
+    const job = createNotifyJob({ prisma: db.prisma, emailSender: email, pushSender: fakePushSender({ ok: false }) })
+
+    await job(
+      baseJob({
+        type: 'billing.trial_ended',
+        title: 'Seu plano agora é Grátis',
+        body: 'texto inline do job',
+        payload: { reason: 'trial_ended', planSlug: 'free', targetPlanName: 'Grátis' },
+      }),
+    )
+
+    expect(email.sent).toHaveLength(1)
+    expect(email.sent[0]?.subject).toBe('Seu plano agora é Grátis')
+    expect(email.sent[0]?.text).toBe(
+      'Seu período de teste terminou e você voltou para o plano Grátis. ' +
+        'Nenhum dado foi apagado: seus jogos e seu histórico continuam disponíveis.',
+    )
+  })
+
+  it('billing.downgraded sem `reason`/`targetPlanName` no payload cai no fallback title/body', async () => {
+    const db = createFakeDb()
+    db.users.set(USER_ID, { id: USER_ID, email: 'user@example.com' })
+    const email = fakeEmailSender()
+    const job = createNotifyJob({ prisma: db.prisma, emailSender: email, pushSender: fakePushSender({ ok: false }) })
+
+    await job(
+      baseJob({
+        type: 'billing.downgraded',
+        title: 'Título inline do job',
+        body: 'Corpo inline do job',
+        payload: undefined,
+      }),
+    )
+
+    expect(email.sent[0]?.subject).toBe('Título inline do job')
+    expect(email.sent[0]?.text).toBe('Corpo inline do job')
   })
 })
 

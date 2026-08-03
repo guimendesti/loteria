@@ -18,7 +18,8 @@
  *   5. Push — se `pushEnabled` E o usuário tem >= 1 `PushSubscription`, tenta
  *      `PushSender.send` na primeira subscription; grava SENT/FAILED. Sem subscription
  *      cadastrada, não há o que enviar — não é falha, não gera linha (mesma lógica de
- *      "supressão" do horário de silêncio).
+ *      "supressão" do horário de silêncio). Subscription MORTA (404/410,
+ *      `PushSendResult.shouldDeleteSubscription`) cai na mesma supressão — ver P4a abaixo.
  *
  * ── Idempotência (P4) ──────────────────────────────────────────────────────────────────
  *
@@ -29,16 +30,39 @@
  * e extraída para a coluna pelo adapter (`lib/prisma-adapters.ts`). O `findFirst` ANTES
  * de agir evita reenviar e-mail/push no retry; numa corrida real, o segundo INSERT viola
  * a unique (P2002), o job falha e o retry vira no-op — idempotência garantida pelo banco.
+ *
+ * ── Subscription morta (P4a) ─────────────────────────────────────────────────────────────
+ *
+ * RESOLVIDO: `PushSendResult.shouldDeleteSubscription` (`@lotopro/integrations`, setado por
+ * `WebPushSender` em 404/410) sinaliza que o ENDPOINT não existe mais do lado do
+ * navegador/SO — não é uma falha de envio, é um destinatário que sumiu. `sendPush` (abaixo)
+ * apaga a `PushSubscription` (`deleteMany` por `endpoint`, idempotente) e devolve `null` —
+ * mesmo tratamento de "sem subscription cadastrada" — em vez de gravar uma `Notification`
+ * FAILED, que sugeriria um problema de envio a investigar quando na verdade é limpeza
+ * esperada de um dispositivo revogado.
+ *
+ * ── Templates de billing (P4b) ───────────────────────────────────────────────────────────
+ *
+ * `billing.payment_failed`/`billing.downgraded`/`billing.trial_ended` (enfileirados por
+ * `apps/worker/jobs/billing-dunning.ts`) agora têm template dedicado em
+ * `@lotopro/integrations` (docs/09 §9.6 "Cobrança falhou" + mesmo tom para
+ * downgraded/trial_ended) — ver `buildEmailContent` abaixo. Antes caíam no fallback
+ * genérico (`renderPlainTemplate(parsed.title, parsed.body)`).
  */
 import { getLotteryConfig, type LotterySlug } from '@lotopro/core'
 import {
   betCheckedTemplate,
   betPrizedTemplate,
+  billingDowngradedTemplate,
+  billingPaymentFailedTemplate,
+  billingTrialEndedTemplate,
   contestAccumulatedTemplate,
   renderPlainTemplate,
+  type BillingDowngradedTemplatePayload,
   type EmailSender,
   type NotificationTemplateOutput,
   type PushSender,
+  type PushSendResult,
 } from '@lotopro/integrations'
 import { NotificationChannel, NotificationStatus, Prisma } from '@lotopro/db'
 import { notifyJobSchema, type NotifyJobData } from '../queues'
@@ -88,6 +112,13 @@ export interface NotifyPrisma {
   }
   pushSubscription: {
     findMany(args: { where: { userId: string } }): Promise<NotifyPrismaPushSubscriptionRow[]>
+    /**
+     * P4a — apaga a subscription morta (404/410, `PushSendResult.shouldDeleteSubscription`).
+     * `deleteMany` (não `delete`) de propósito: idempotente por `endpoint` mesmo se a linha já
+     * tiver sido removida por uma corrida anterior (retry do BullMQ) — não lança se 0 linhas
+     * casarem, ao contrário de `delete` (que exige unique match e lançaria P2025).
+     */
+    deleteMany(args: { where: { endpoint: string } }): Promise<unknown>
   }
   notification: {
     /** `dedupeKey` é lido de dentro de `payload` (Json) — ver adapter em `lib/prisma-adapters.ts`. */
@@ -184,6 +215,22 @@ function asNonNegativeInt(value: unknown): number | null {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null
 }
 
+function asNonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+const BILLING_DOWNGRADE_REASONS = new Set<BillingDowngradedTemplatePayload['reason']>([
+  'payment_failed',
+  'canceled',
+  'scheduled_downgrade',
+])
+
+function asBillingDowngradeReason(value: unknown): BillingDowngradedTemplatePayload['reason'] | null {
+  return typeof value === 'string' && BILLING_DOWNGRADE_REASONS.has(value as BillingDowngradedTemplatePayload['reason'])
+    ? (value as BillingDowngradedTemplatePayload['reason'])
+    : null
+}
+
 function safeLotteryName(slug: string): string | null {
   try {
     return getLotteryConfig(slug as LotterySlug).name
@@ -233,6 +280,31 @@ function buildEmailContent(parsed: NotifyJobData): NotificationTemplateOutput {
       typeof estimatedRaw === 'string' && /^-?\d+$/.test(estimatedRaw) ? BigInt(estimatedRaw) : null
     if (nextDrawLabel !== null && estimatedNextCents !== null) {
       return contestAccumulatedTemplate({ lotteryName, estimatedNextCents, nextDrawLabel })
+    }
+  }
+
+  // P4b — billing.* (docs/09 §9.6 "Cobrança falhou" + downgraded/trial_ended, mesmo tom).
+  // Enfileirado hoje por `apps/worker/jobs/billing-dunning.ts` (fora do território desta
+  // tarefa) com um `title`/`body` próprio embutido no job — esse texto inline segue sendo
+  // usado para IN_APP/PUSH (`createNotificationRow`/`sendPush` usam `parsed.title`/`body`
+  // diretamente, não passam por `buildEmailContent`); só o e-mail passa a usar o template
+  // dedicado abaixo, com o texto canônico de docs/09 §9.6.
+  if (parsed.type === 'billing.payment_failed') {
+    return billingPaymentFailedTemplate()
+  }
+
+  if (parsed.type === 'billing.downgraded') {
+    const targetPlanName = asNonEmptyString(payload['targetPlanName'])
+    const reason = asBillingDowngradeReason(payload['reason'])
+    if (targetPlanName !== null && reason !== null) {
+      return billingDowngradedTemplate({ targetPlanName, reason })
+    }
+  }
+
+  if (parsed.type === 'billing.trial_ended') {
+    const targetPlanName = asNonEmptyString(payload['targetPlanName'])
+    if (targetPlanName !== null) {
+      return billingTrialEndedTemplate({ targetPlanName })
     }
   }
 
@@ -289,6 +361,19 @@ async function createNotificationRow(
     },
   })
   return created.id
+}
+
+// ─── P4a — subscription morta ──────────────────────────────────────────────────
+
+/**
+ * `true` quando o `PushSendResult` sinaliza um endpoint que não existe mais (404/410).
+ * Prioriza o campo tipado (`shouldDeleteSubscription`); o prefixo `"gone:"` em `error` fica
+ * como fallback para um `PushSender` mais antigo que ainda não tenha sido atualizado para
+ * setar o campo (defesa em profundidade, não o contrato principal — ver `webpush.ts`).
+ */
+function isDeadSubscriptionResult(result: PushSendResult): boolean {
+  if (result.shouldDeleteSubscription === true) return true
+  return typeof result.error === 'string' && result.error.startsWith('gone:')
 }
 
 // ─── Canais ─────────────────────────────────────────────────────────────────────
@@ -383,6 +468,21 @@ async function sendPush(
     title: parsed.title,
     body: parsed.body,
   })
+
+  // P4a — subscription morta (404/410): apaga o registro e trata como "nada para enviar"
+  // (mesma supressão de `subscriptions.length === 0`, acima) em vez de falha permanente do
+  // canal — a falha é do DISPOSITIVO revogado, não do envio em si, então não grava uma linha
+  // FAILED enganosa. Um retry do mesmo job (mesma dedupeKey) cai direto no early-return de
+  // "sem subscription" depois disso, sem loop.
+  if (!result.ok && isDeadSubscriptionResult(result)) {
+    await deps.prisma.pushSubscription.deleteMany({ where: { endpoint: subscription.endpoint } })
+    logger?.info('notify.push.subscription-deleted', {
+      userId: parsed.userId,
+      endpoint: subscription.endpoint,
+      error: result.error,
+    })
+    return null
+  }
 
   const status = result.ok ? NotificationStatus.SENT : NotificationStatus.FAILED
   const notificationId = await createNotificationRow(deps.prisma, parsed, channel, dedupeKey, {
