@@ -100,7 +100,26 @@ Nenhum destes aparecia em desenvolvimento — só o container/VPS os revelou.
 | 3 | build exigia banco no ar | páginas públicas consultavam Prisma sem guard → build quebrava sem DB |
 | 4 | worker em crash-loop | `z.string().min(1).optional()` rejeita string vazia, e o compose injeta `${VAR:-}` sempre |
 | 5 | **API da Caixa responde 403 de IP de datacenter** | bloqueio por origem (não por header) → criado `CaixaMirrorProvider` como fallback. É o risco RT2 do doc 01, cuja mitigação já estava projetada |
+| 7 | **cadastro 100% quebrado** | `User.tenantId` e FK obrigatoria e o Better Auth nao a preenchia (`input:false`, sem default) -> todo signup falhava com "Argument tenant is missing". Resolvido no hook `create.before` |
 | 6 | web sem engine do Prisma | `output: standalone` não rastreia `.so.node` → cópia para caminho fixo + `PRISMA_QUERY_ENGINE_LIBRARY` |
+
+### Contas de teste (criadas em 03/08/2026)
+
+| Perfil | E-mail | Senha | Acesso |
+|---|---|---|---|
+| Cliente | `cliente@teste.com` | `Teste@2026` | `/app` ✅ · `/admin` bloqueado (redirect) |
+| Administrador | `admin@teste.com` | `Admin@2026` | `/app` ✅ · `/admin` ✅ |
+
+Ambas com `emailVerified = true` (verificação por e-mail pulada — sem Resend configurado).
+O admin foi promovido por SQL: `update "User" set role='ADMIN' where email='admin@teste.com'`.
+⚠️ São contas de **teste**. Trocar as senhas ou removê-las antes de qualquer uso real.
+
+Recriar do zero (se o banco for resetado):
+```bash
+curl -X POST https://loteria.iauai.online/api/auth/sign-up/email -H "Content-Type: application/json" \
+  -d '{"email":"cliente@teste.com","password":"Teste@2026","name":"Cliente Teste","isAdult":true}'
+# depois promover o admin com o UPDATE acima
+```
 
 ### Pendências de produção
 
