@@ -37,6 +37,16 @@ ENV DATABASE_URL="postgresql://build:build@localhost:5432/build"
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm -F @lotopro/web build
 
+# O `output: standalone` do Next NÃO inclui o engine nativo do Prisma (.so.node) —
+# o rastreador só segue imports JS. Sem isto o runtime falha com
+# "Prisma Client could not locate the Query Engine for runtime debian-openssl-3.0.x".
+# Copiamos o diretório gerado para um caminho fixo (o caminho real tem o hash de
+# versão do pnpm, que não dá para escrever à mão de forma estável).
+RUN PRISMA_CLIENT_DIR="$(dirname "$(find /app/node_modules/.pnpm -path '*/.prisma/client/index.js' | head -1)")" \
+    && mkdir -p /prisma-runtime \
+    && cp -r "$PRISMA_CLIENT_DIR"/. /prisma-runtime/ \
+    && ls /prisma-runtime/libquery_engine-debian-openssl-3.0.x.so.node
+
 # ─── Runtime: web ────────────────────────────────────────────────────────────
 FROM base AS web
 ENV NODE_ENV=production
@@ -50,6 +60,10 @@ COPY --from=build --chown=nextjs:nodejs /app/apps/web/.next/standalone ./
 COPY --from=build --chown=nextjs:nodejs /app/apps/web/.next/static ./apps/web/.next/static
 # public/ pode estar vazia — COPY tolerante (o . no fim evita erro se não houver arquivos)
 COPY --from=build --chown=nextjs:nodejs /app/apps/web/public/ ./apps/web/public/
+
+# Engine do Prisma + override explícito do caminho (ver nota no stage de build).
+COPY --from=build --chown=nextjs:nodejs /prisma-runtime ./prisma-runtime
+ENV PRISMA_QUERY_ENGINE_LIBRARY=/app/prisma-runtime/libquery_engine-debian-openssl-3.0.x.so.node
 
 USER nextjs
 EXPOSE 3000
