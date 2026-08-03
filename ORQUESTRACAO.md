@@ -22,8 +22,11 @@
 
 **Produção no ar:** https://loteria.iauai.online (ver seção PRODUÇÃO abaixo).
 **Repositório:** `git@github.com:guimendesti/loteria.git` (branch `main`).
-**Testes:** 627 verdes (160 core · 60 db · 195 integrations · 71 worker · 141 web) · typecheck exit 0.
+**Testes:** 901 verdes (201 core · 60 db · 198 integrations · 88 worker · 354 web) · typecheck exit 0.
 **Backoffice `/admin` funcionando em produção** (RBAC validado autenticado). Contas de teste: ver PRODUÇÃO.
+**Bolão Manager (Épico 10) no ar** — o diferencial central do produto. Validado em produção
+criando bolão real (R$ 105,00 / 7 cotas = R$ 15,00, sobra 0) e abrindo o convite público
+com preview de WhatsApp correto.
 
 **Skills do projeto** (`.claude/skills/`) — conhecimento destilado, reaproveitável:
 `deploy-monorepo-vps` (7 bugs de container/Traefik/Prisma já diagnosticados) ·
@@ -35,9 +38,36 @@ apostas/reprocesso + financeiro + config + suporte), área de conta do cliente (
 LGPD, cripto da chave Pix), push no cliente (SW + opt-in + limpeza de subscription morta),
 templates de billing, correção de drift dos docs, página de status.
 
+**Sessão 5 (03/08) entregou o Bolão Manager** em 3 ondas (11 agentes, contrato congelado em
+`docs/contracts/onda8-bolao.md`):
+- **Onda 8** (5 agentes) — cotas + Pix BR Code (EMV/CRC16 validado contra o vetor canônico
+  `0x29B1` e o exemplo publicado do Manual do BCB), router com 15 procedures, UI dono/participante,
+  convite público `/j/[code]`, 5 eventos de notificação, e as 6 correções médias pendentes do P3.
+- **Onda 8b** (4 agentes) — fechou o que a implementação revelou: as notificações passaram a
+  DISPARAR, o Pix parou de falhar para quem cadastrou telefone, `Bet.poolId` ganhou caminho de
+  escrita (o bolão nascia sem os jogos dentro) e o bloqueio de conta virou real.
+- **Onda 8c** (3 agentes) — correção dos 10 achados da auditoria adversarial (abaixo).
+
+### ⚠️ Lições da Sessão 5 — leia antes de orquestrar a próxima
+
+1. **Fixe a URL pública no contrato.** Dois agentes da mesma onda escolheram rotas diferentes
+   para o convite (`/bolao/[codigo]` na UI, `/j/[inviteCode]` na página). Typecheck passava,
+   901 testes passavam, e **todo link compartilhado no WhatsApp dava 404** — o funil viral
+   inteiro inalcançável. Nada além de um teste de ponta a ponta pegaria isso.
+2. **"Recount dentro da transação" não é trava.** O Postgres roda em READ COMMITTED por padrão;
+   duas transações não veem o INSERT uma da outra. Precisa de `SELECT ... FOR UPDATE` na linha
+   agregadora (preferido a `Serializable`, que exige tratar o erro 40001 com retry).
+3. **Auditoria adversarial com Opus continua pagando.** 10 achados com exploração concreta, 3
+   ALTOS, todos invisíveis para typecheck e para a suíte. Um deles apontou erro **do contrato**,
+   não do código (`proofUrl` de todos os membros exposto a qualquer participante).
+4. **O contrato erra.** Escrevi uma invariante matemática falsa (`sobra < valor da cota`; o
+   correto é `sobra < nº de cotas`) e uma regra de saída mais frouxa que a segura. Em ambos os
+   casos o agente implementou o certo e reportou a divergência — vale instruir explicitamente
+   que reportar divergência é resposta esperada, não desobediência.
+
 ---
 
-## ✅ SESSÃO 1 (Ondas 1–2) · ✅ SESSÃO 2 (Ondas 3a–3b) · ✅ SESSÃO 3 (Passo 0 + Ondas 5–6) · ✅ SESSÃO 4 (Onda 7)
+## ✅ SESSÕES 1–4 (Ondas 1–7) · ✅ SESSÃO 5 (Ondas 8, 8b, 8c — Bolão Manager)
 
 Histórico das sessões 1–3 (fundação → apostas → monetização/landing). O estado consolidado
 está na seção da Sessão 4, logo abaixo.
@@ -101,7 +131,7 @@ passavam. Reforça a regra: validar no ambiente real, autenticado, página por p
 
 ---
 
-## SESSÃO 5 — roteiro
+## SESSÃO 6 — roteiro
 
 **Prompt de retomada (colar no Claude Code):**
 > Leia ORQUESTRACAO.md e CLAUDE.md (as skills em .claude/skills/ trazem o protocolo e as lições).
