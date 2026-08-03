@@ -3,7 +3,7 @@
 > Atualizado a cada sessão. **Fonte da verdade sobre o que está feito e o que vem a seguir.**
 > Modelos por demanda: [docs/11-guia-de-modelos-ia.md](docs/11-guia-de-modelos-ia.md).
 
-## Protocolo (comprovado em 3 sessões)
+## Protocolo (comprovado em 4 sessões, 25+ agentes)
 
 - Ondas de subagentes; 1 agente = 1 território disjunto; contratos compartilhados escritos ANTES pelo
   orquestrador (types.ts congelado; contrato Asaas idêntico nos 2 prompts funcionou).
@@ -22,7 +22,8 @@
 
 **Produção no ar:** https://loteria.iauai.online (ver seção PRODUÇÃO abaixo).
 **Repositório:** `git@github.com:guimendesti/loteria.git` (branch `main`).
-**Testes:** 623 verdes (160 core · 60 db · 195 integrations · 71 worker · 137 web) · typecheck exit 0.
+**Testes:** 627 verdes (160 core · 60 db · 195 integrations · 71 worker · 141 web) · typecheck exit 0.
+**Backoffice `/admin` funcionando em produção** (RBAC validado autenticado). Contas de teste: ver PRODUÇÃO.
 
 **Skills do projeto** (`.claude/skills/`) — conhecimento destilado, reaproveitável:
 `deploy-monorepo-vps` (7 bugs de container/Traefik/Prisma já diagnosticados) ·
@@ -38,9 +39,8 @@ templates de billing, correção de drift dos docs, página de status.
 
 ## ✅ SESSÃO 1 (Ondas 1–2) · ✅ SESSÃO 2 (Ondas 3a–3b) · ✅ SESSÃO 3 (Passo 0 + Ondas 5–6) · ✅ SESSÃO 4 (Onda 7)
 
-**Estado atual: 555 testes verdes (214 core · 6 db · 186 integrations · 64 worker · 85 web),
-typecheck exit 0 nos 6 pacotes, 260 arquivos, 13 commits.**
-Últimos: `c8b9edf` (passo 0), `50500b3`/`cadfe0e` (ondas 5–6).
+Histórico das sessões 1–3 (fundação → apostas → monetização/landing). O estado consolidado
+está na seção da Sessão 4, logo abaixo.
 
 ### O que existe e funciona
 
@@ -55,48 +55,73 @@ typecheck exit 0 nos 6 pacotes, 260 arquivos, 13 commits.**
 | Web (marketing) | Home real, planos, recursos, **resultados públicos ISR (SEO)**, **conferidor sem login**, FAQ, legais⁽ʳᵉᵛ ᵖᵉⁿᵈ⁾, sitemap/robots |
 | Infra dev | docker-compose (PG+Redis), .env com VAPID real, 11 concursos reais sincronizados |
 
-⁽ᵖ⁾ = parcial · O produto está a um passo do MVP técnico: falta o BACKOFFICE.
+⁽ᵖ⁾ = parcial na S3; **completado na S4**.
 
-### Pendências (fila da Sessão 4, em ordem)
+### ✅ SESSÃO 4 (03/08) — Onda 7 + revisão de segurança
+
+**627 testes verdes** (160 core · 60 db · 195 integrations · 71 worker · 141 web).
+Commits: `0bfb043` (docs+db), `1831e6f` (onda 7), `+` correções de segurança, `+` fix do provider.
+
+| Entrega | Estado |
+|---|---|
+| **Backoffice completo** | RBAC 2 níveis (rank + permissões finas), auditoria em toda mutation, dashboard com saúde do sistema, usuários com LGPD, apostas + **reprocessamento idempotente**, financeiro (MRR, faturas, replay de webhook), config de modalidades, suporte |
+| **Conta do cliente** | perfil, assinatura, notificações, privacidade (export + anonimização em transação), cripto AES-256-GCM da chave Pix |
+| **Push no cliente** | service worker, opt-in, deleção de subscription morta (404/410), templates de billing |
+| **Skills** | `.claude/skills/`: deploy-monorepo-vps, orquestracao-ondas, loterias-caixa-br |
+
+**Revisão adversarial (Opus) — 3 falhas ALTAS exploráveis, todas corrigidas:**
+1. Escalada lateral SUPPORT⇄FINANCE (FINANCE podia apagar conferências de todos; SUPPORT mexia em cobrança) — permissões finas + testes de regressão.
+2. `exportData` vazava `ownerPixKeyEnc` e **`inviteCode`** (credencial viva de entrada no bolão).
+3. `anonymize` gravava e-mail/nome originais no `AuditLog`, que é legível → anonimização inefetiva (LGPD art. 16/18).
+
+Mais 2 médias corrigidas pelo orquestrador: envs faltando no serviço `web` do compose
+(`ENCRYPTION_KEY` → chave Pix nasceria morta) e auto-anonimização com lockout irreversível.
+**Nenhum achado CRÍTICO** — nenhum CUSTOMER alcança o backoffice.
+
+**Bug de produção #8** (só aparece implantado): `(admin)/layout.tsx` sem `TRPCReactProvider` →
+**todas** as páginas de admin davam 500 (`Unable to find tRPC Context`). Typecheck e 627 testes
+passavam. Reforça a regra: validar no ambiente real, autenticado, página por página.
+
+### Pendências (fila da Sessão 5, em ordem)
 
 | # | Pendência | Dono |
 |---|---|---|
-| P1 | **Backoffice v1** (Onda 7 — não coube na S3): BO-01..BO-50 P0 | Sonnet + Opus (RBAC/audit) |
-| P2 | Schema billing: `gatewayCustomerId`, `pendingPlanId`, `SubStatus.PENDING`, `Invoice.invoiceUrl` (workarounds documentados em server/lib/billing) + migration | Orquestrador + Sonnet |
-| P3 | Telas de conta/assinatura (`/app/conta/**` — CTAs do paywall já apontam para lá) + PaywallDialog no detalhe do jogo | Sonnet |
-| P4 | `notify.ts`: templates billing.* (hoje fallback) + tratar `gone:` do push (deletar subscription) + campo tipado `shouldDeleteSubscription` no contrato PushSender | Sonnet |
-| P5 | Registro de PushSubscription no cliente (service worker + prompt do PWA) — sem isso push real não tem destinatário | Sonnet |
-| P6 | LP-05/06 (recursos/conferencia, fechamentos), LP-15 status page | Sonnet/Haiku |
-| P7 | Onboarding guiado completo (CL-05), edição de dezenas (CL-15), busca por data (CL-71), `?concurso=` na listagem | Sonnet |
-| P8 | Dunning: pró-rata de upgrade; extrair `resolveScheduledPlanSlug`/ciclo duplicados p/ `packages/core/billing` | Sonnet |
-| P9 | Docs drift: docs/08 SY-13 diz "HMAC" (Asaas usa token em header); docs/07 BetCheck sem tierCounts; Tailwind v3 vs doc | Haiku |
-| P10 | Backfill histórico completo (~7h, job noturno) — caminho validado | Guilherme dispara |
-| P11 | Contas reais: Asaas sandbox (ASAAS_API_KEY/WEBHOOK_TOKEN), Resend (RESEND_API_KEY) — placeholders no .env | **Guilherme** |
-| P12 | Teste de entitlements cross-package → mover p/ db; G11/G12 (IA) em docs/05 | Haiku |
+| P1 | **Bolão Manager** (Épico 10) — o diferencial central do produto, ainda não implementado. Onda dedicada: schema/rateio/Pix EMV/cripto com **Opus**, fluxos com Sonnet. Testar QR em 4+ bancos | Opus + Sonnet |
+| P2 | **Gerador + fechamentos** (Épico 9): matrizes de garantia com verificação exaustiva offline | Opus + Sonnet |
+| P3 | Achados MÉDIOS da revisão de segurança, reportados e não corrigidos: (a) `reprocessChecks` apaga BetCheck de apostas arquivadas e não recria (assimetria → perda de conferência); (b) `deleteAccount` não limpa `passwordHash` nem reseta role; (c) `push.subscribe` reatribui userId por endpoint; (d) `fixContest` não valida dezenas contra o universo da modalidade; (e) AuditLog sem ip/userAgent (contexto tRPC não expõe headers); (f) AdminNav não filtra itens por papel | Sonnet |
+| P4 | `User.blockedAt` no schema — hoje `toggleBlock` só revoga sessões e retorna `implemented:false` (honesto, mas incompleto) | Orquestrador + Sonnet |
+| P5 | `billing-dunning.ts` enfileira título inline divergente do doc → push/in-app mostram texto antigo; só o e-mail usa o template novo | Sonnet |
+| P6 | Extrair a reconstrução de ContestResult (duplicada entre `worker/check-bets` e `admin/bets`) para `packages/core` | Sonnet |
+| P7 | `billing.invoices.list` não seleciona `invoiceUrl` (coluna já existe) → sem link de download; falta mutation de troca de meio de pagamento (CL-107) | Sonnet |
+| P8 | OCR + assistente IA (Épico 11) — prompts/guardrails com Opus, teste adversarial obrigatório | Opus + Sonnet |
+| P9 | Hardening/GA (Épico 12): LGPD final, PWA, acessibilidade, teste de carga, restore de backup | Sonnet |
+| P10 | Backfill histórico (~25k concursos) — espelho tem rate limit, exige throttle maior | Guilherme dispara |
+| P11 | **Contas reais**: Resend (e-mail), Asaas sandbox (billing), Google OAuth — placeholders no .env de produção | **Guilherme** |
+| P12 | Trocar/remover as contas de teste antes de uso real | **Guilherme** |
 
 ---
 
-## SESSÃO 4 — roteiro
+## SESSÃO 5 — roteiro
 
-**Prompt de retomada:**
-> Leia ORQUESTRACAO.md e CLAUDE.md. Execute a Sessão 4: P2 (migration billing, inline) → Onda 7
-> (backoffice, 2 agentes) ∥ Onda 7b (P3+P4+P5, 2 agentes) → checkpoint → se houver orçamento,
-> Onda 8 (gerador+fechamentos). Mesmo protocolo.
+**Prompt de retomada (colar no Claude Code):**
+> Leia ORQUESTRACAO.md e CLAUDE.md (as skills em .claude/skills/ trazem o protocolo e as lições).
+> Execute a Sessão 5: Onda 8 = ★ Bolão Manager (P1), o diferencial central do produto.
+> Mesmo protocolo: contratos antes de paralelizar, territórios disjuntos, commit por onda,
+> checkpoint com revisão adversarial em Opus, deploy e validação autenticada em produção.
 
-**Onda 7 — Backoffice (2 agentes):**
-| Agente | Área | Modelo | Entrega |
+**Onda 8 — ★ Bolão Manager (Épico 10), o wedge do produto:**
+
+| Agente | Território | Modelo | Entrega |
 |---|---|---|---|
-| admin-core | `(admin)` + routers admin | Sonnet, RBAC revisado **Opus** | KPIs+funil (BO-01..05 com saúde do sistema), usuários (BO-10..15), auditoria transversal |
-| admin-ops | `(admin)` (páginas distintas) + routers | Sonnet | Apostas+reprocesso (BO-20/21), financeiro (BO-30..36), config de modalidades (BO-40..42), suporte (BO-50) |
+| pool-core | `packages/core/src/pool` + testes | **Opus** | Rateio já existe; faltam cotas/estados e o **payload Pix EMV (CRC16 + TLV)** — testar QR em 4+ bancos |
+| pool-api | `apps/web/src/server/routers/pool.ts` + lib | **Opus** (dinheiro/cripto) | CRUD, convite, registro de pagamento P2P, rateio, recibo com hash |
+| pool-ui | `apps/web/src/app/(app)/app/boloes/**` | Sonnet | Fluxos de organizador e participante (máx. 5 telas do convite ao "já paguei") |
+| pool-public | `(marketing)/bolao/[codigo]` + `(auth)` | Sonnet | Página pública do convite + cadastro curto (AU-07) — **motor de viralidade** |
 
-**Onda 7b (paralela) — Fechamento do ciclo do usuário (2 agentes):**
-| Agente | Área | Entrega |
-|---|---|---|
-| conta | `(app)/app/conta/**` | P3: perfil, assinatura (usa billing.*), preferências, LGPD export/delete (CL-100..110) |
-| push-client | `(app)` service worker + `apps/worker` notify | P4+P5: registro de PushSubscription, prompt PWA, templates billing, tratamento `gone:` |
+⚠️ Invioláveis do bolão (CLAUDE.md, docs/03): zero custódia; Pix P2P participante→organizador;
+bolão privado por convite (sem diretório público); banner de não-responsabilidade em toda tela.
 
-**Onda 8 — Gerador e fechamentos (Épico 9)** — se couber; senão S5.
-**Depois:** Onda 9 ★ Bolão Manager (Épico 10) → Onda 10 OCR/IA → Onda 11 hardening/GA.
+**Depois:** Onda 9 gerador+fechamentos (P2) · Onda 10 OCR+IA (P8) · Onda 11 hardening/GA (P9).
 
 ## 🚀 PRODUÇÃO — no ar desde 03/08/2026
 
