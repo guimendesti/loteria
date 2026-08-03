@@ -79,6 +79,12 @@ export const auth = betterAuth({
             data: {
               ...user,
               termsAcceptedAt: new Date(),
+              // `User.tenantId` é FK OBRIGATÓRIA e o Better Auth não a conhece
+              // (o campo é `input: false`, sem default). Sem isto todo cadastro
+              // falha com "Argument `tenant` is missing" — o funil inteiro morre.
+              // Enquanto houver um único tenant, resolvemos o `platform` aqui.
+              // No white-label (Fase 3) isto passa a derivar do host da requisição.
+              tenantId: await getPlatformTenantId(),
             },
           }
         },
@@ -88,3 +94,30 @@ export const auth = betterAuth({
 })
 
 export type Session = typeof auth.$Infer.Session
+
+/**
+ * Resolve (uma vez por processo) o tenant padrão da plataforma.
+ * Memoizado porque é constante e roda em todo cadastro; falha ALTO se o seed
+ * não tiver rodado, para o erro apontar a causa real em vez de virar FK violation.
+ */
+let platformTenantIdPromise: Promise<string> | null = null
+
+function getPlatformTenantId(): Promise<string> {
+  if (platformTenantIdPromise === null) {
+    platformTenantIdPromise = prisma.tenant
+      .findUnique({ where: { slug: 'platform' }, select: { id: true } })
+      .then((tenant) => {
+        if (!tenant) {
+          throw new Error(
+            'Tenant "platform" não encontrado — rode o seed (pnpm -F @lotopro/db seed) antes de aceitar cadastros.',
+          )
+        }
+        return tenant.id
+      })
+      .catch((error: unknown) => {
+        platformTenantIdPromise = null // não memoiza falha: a próxima tentativa reconsulta
+        throw error
+      })
+  }
+  return platformTenantIdPromise
+}
