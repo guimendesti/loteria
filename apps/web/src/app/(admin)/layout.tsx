@@ -2,6 +2,7 @@ import { headers } from 'next/headers'
 import { redirect } from 'next/navigation'
 import { auth } from '@/lib/auth'
 import { ADMIN_ROLES, type AdminRole } from '@/server/lib/admin/rbac'
+import { TRPCReactProvider } from '@/app/(app)/trpc-provider'
 import { AdminNav } from './components/AdminNav'
 import { AdminRoleProvider } from './components/AdminRoleContext'
 
@@ -35,7 +36,8 @@ export default async function AdminLayout({
   }
 
   return (
-    <div className="flex min-h-screen">
+    <TRPCReactProvider>
+      <div className="flex min-h-screen">
       <aside className="w-64 shrink-0 border-r border-ink-200 bg-brand-900 px-6 py-5 text-white">
         <p className="font-display text-xl font-bold">LotoPro Admin</p>
         <p className="mt-1 text-xs text-brand-300">{role}</p>
@@ -44,6 +46,7 @@ export default async function AdminLayout({
       <main className="flex-1 bg-ink-50 px-8 py-8">
         <AdminRoleProvider role={role}>{children}</AdminRoleProvider>
       </main>
-    </div>
+      </div>
+    </TRPCReactProvider>
   )
 }
