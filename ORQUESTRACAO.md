@@ -82,29 +82,34 @@ typecheck exit 0 nos 6 pacotes, 260 arquivos, 13 commits.**
 
 ## 🚀 PRODUÇÃO — no ar desde 03/08/2026
 
-**https://loteria.iauai.online** · VPS 76.13.172.16 ·  · Traefik compartilhado
-(rede , certresolver , entrypoint ) · Let's Encrypt válido até 01/11/2026.
+**https://loteria.iauai.online** · VPS `76.13.172.16` · diretório `/opt/lotopro`
+Traefik compartilhado: rede `proxy-network`, certresolver `myresolver`, entrypoint `websecure`.
+Certificado Let's Encrypt válido até **01/11/2026**.
 
-Serviços: postgres, redis, web, worker (migrate roda one-shot antes). Deploy: Already up to date..
+Serviços: `postgres`, `redis`, `web`, `worker` (+ `migrate` one-shot antes dos demais).
+Atualizar: `cd /opt/lotopro && git pull && docker compose -f docker-compose.prod.yml up -d --build`.
 
-### Bugs de produção corrigidos durante o deploy (nenhum aparecia em dev)
+### Bugs de produção corrigidos durante o deploy
 
-| # | Bug | Causa |
+Nenhum destes aparecia em desenvolvimento — só o container/VPS os revelou.
+
+| # | Bug | Causa raiz |
 |---|---|---|
-| 1 |  falhava | tailwind.config importava o índice do @lotopro/ui (JSX no jiti) |
-| 2 | Prisma quebrava em runtime | faltava binaryTarget  + binário  na imagem |
-| 3 | build exigia banco no ar | páginas públicas consultavam Prisma sem guard |
-| 4 | worker em crash-loop |  rejeita string vazia (docker injeta ) |
-| 5 | **API da Caixa dá 403 de IP de datacenter** | bloqueio por origem →  como fallback (risco RT2 do doc 01, mitigação já projetada) |
-| 6 | web sem engine do Prisma |  não rastreia  → cópia +  |
+| 1 | `next build` falhava | `tailwind.config.ts` importava o índice do `@lotopro/ui`; o jiti não resolve JSX |
+| 2 | Prisma quebrava em runtime | faltava `binaryTargets = debian-openssl-3.0.x` **e** o binário `openssl` na imagem (o Prisma o usa para detectar a libssl) |
+| 3 | build exigia banco no ar | páginas públicas consultavam Prisma sem guard → build quebrava sem DB |
+| 4 | worker em crash-loop | `z.string().min(1).optional()` rejeita string vazia, e o compose injeta `${VAR:-}` sempre |
+| 5 | **API da Caixa responde 403 de IP de datacenter** | bloqueio por origem (não por header) → criado `CaixaMirrorProvider` como fallback. É o risco RT2 do doc 01, cuja mitigação já estava projetada |
+| 6 | web sem engine do Prisma | `output: standalone` não rastreia `.so.node` → cópia para caminho fixo + `PRISMA_QUERY_ENGINE_LIBRARY` |
 
 ### Pendências de produção
 
-- **P-prod-1**: sem  real → e-mails não saem (placeholder no .env).
-- **P-prod-2**: sem / → billing inativo; worker loga aviso e não registra o dunning.
-- **P-prod-3**: sem  → login social indisponível (e-mail/senha funciona).
-- **P-prod-4**: backfill histórico não rodado (só os 11 concursos mais recentes) — o espelho tem rate limit, exige throttle maior.
-- **P-prod-5**: espelho é serviço de terceiro sem SLA; avaliar proxy próprio fora de datacenter se a Caixa mantiver o bloqueio.
+- **P-prod-1** — sem `RESEND_API_KEY` real: e-mails não são enviados (placeholder no `.env`).
+- **P-prod-2** — sem `ASAAS_API_KEY`/`ASAAS_WEBHOOK_TOKEN`: billing inativo; o worker loga aviso e não registra o dunning.
+- **P-prod-3** — sem `GOOGLE_CLIENT_ID/SECRET`: login social indisponível (e-mail/senha funciona).
+- **P-prod-4** — backfill histórico não rodado: só os 11 concursos mais recentes. O espelho tem rate limit; exige throttle maior que o do provider oficial.
+- **P-prod-5** — o espelho é serviço de terceiro sem SLA. Se a Caixa mantiver o bloqueio por origem, avaliar proxy próprio fora de datacenter.
+- **P-prod-6** — páginas ISR nascem "vazias" a cada rebuild (build sem banco) e só se preenchem na revalidação (≤5 min). Aceitável; se incomodar, criar rota de revalidação sob demanda e chamá-la no fim do deploy.
 
 ## Ambiente local
 
