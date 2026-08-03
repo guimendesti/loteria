@@ -56,6 +56,14 @@ export {
 } from './caixa/resilient'
 
 export {
+  CaixaMirrorProvider,
+  CAIXA_MIRROR_BASE_URL,
+  MIRROR_RETRY_DELAYS_MS,
+  MIRROR_TIMEOUT_MS,
+  type CaixaMirrorProviderOptions,
+} from './caixa/mirror'
+
+export {
   EmailSendError,
   betPrizedTemplate,
   betCheckedTemplate,

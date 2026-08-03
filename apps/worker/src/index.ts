@@ -8,6 +8,7 @@ import { PrismaClient } from '@lotopro/db'
 import {
   AsaasClient,
   CaixaOfficialProvider,
+  CaixaMirrorProvider,
   ResilientResultProvider,
   ResendEmailSender,
   NoopPushSender,
@@ -49,7 +50,10 @@ async function bootstrap(): Promise<void> {
   await connection.connect()
   const queues = createQueues(connection)
 
-  const provider = new ResilientResultProvider(new CaixaOfficialProvider(), [], {
+    // A API oficial responde 403 de IPs de datacenter (ver mirror.ts) — o espelho
+  // é quem efetivamente serve em produção. A ordem é mantida: se o oficial voltar
+  // a responder, ele tem prioridade.
+  const provider = new ResilientResultProvider(new CaixaOfficialProvider(), [new CaixaMirrorProvider()], {
     logger: (event) => rootLogger.info('provider.event', { event }),
   })
 
