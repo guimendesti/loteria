@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { formatCents } from '@/app/(app)/app/components/format-cents'
 import { ConfirmDialog } from './ConfirmDialog'
+import { safeExternalHref } from './safe-external-href'
 import { MemberStatusBadge } from './StatusBadges'
 import type { PoolMemberRow } from './types'
 
@@ -39,6 +40,60 @@ export function MembersTable({
     return member.status === 'INVITED' || member.status === 'JOINED' || member.status === 'PAID'
   }
 
+  // `proofUrl` é texto livre digitado pelo participante (server/routers/pool.ts valida na
+  // entrada, mas linhas já gravadas continuam como foram salvas). Defesa em profundidade:
+  // sem `safeExternalHref`, um `javascript:`/`data:` clicado pelo organizador nesta tabela é
+  // XSS armazenado. Coluna (desktop): versão compacta. Card (mobile): versão com legenda.
+  function renderProofCell(member: PoolMemberRow) {
+    if (!member.proofUrl) {
+      return <span className="text-ink-400">—</span>
+    }
+
+    const safeHref = safeExternalHref(member.proofUrl)
+    if (!safeHref) {
+      return <span className="text-xs text-danger">Link enviado não é válido</span>
+    }
+
+    return (
+      <span className="inline-flex flex-col gap-0.5">
+        <a
+          href={safeHref}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-brand-500 underline hover:text-brand-700"
+        >
+          Ver
+        </a>
+        <span className="text-xs text-ink-400">Externo, não verificado</span>
+      </span>
+    )
+  }
+
+  function renderProofCard(member: PoolMemberRow) {
+    if (!member.proofUrl) return null
+
+    const safeHref = safeExternalHref(member.proofUrl)
+    if (!safeHref) {
+      return <p className="mt-2 text-sm text-danger">O comprovante de pagamento enviado não é um link válido.</p>
+    }
+
+    return (
+      <>
+        <a
+          href={safeHref}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-2 inline-block text-sm text-brand-500 underline hover:text-brand-700"
+        >
+          Ver comprovante de pagamento
+        </a>
+        <p className="mt-0.5 text-xs text-ink-400">
+          Link externo enviado pelo participante — o LotoPro não verifica o destino.
+        </p>
+      </>
+    )
+  }
+
   return (
     <>
       {/* Desktop: tabela */}
@@ -70,20 +125,7 @@ export function MembersTable({
                 <td className="py-2 align-top">
                   <MemberStatusBadge status={member.status} />
                 </td>
-                <td className="py-2 align-top">
-                  {member.proofUrl ? (
-                    <a
-                      href={member.proofUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-brand-500 underline hover:text-brand-700"
-                    >
-                      Ver
-                    </a>
-                  ) : (
-                    <span className="text-ink-400">—</span>
-                  )}
-                </td>
+                <td className="py-2 align-top">{renderProofCell(member)}</td>
                 <td className="py-2 align-top">
                   <div className="flex justify-end gap-2">
                     {canConfirm(member) ? (
@@ -130,16 +172,7 @@ export function MembersTable({
               <dd className="text-right font-medium text-ink-900">{formatCents(member.amountCents)}</dd>
             </dl>
 
-            {member.proofUrl ? (
-              <a
-                href={member.proofUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-2 inline-block text-sm text-brand-500 underline hover:text-brand-700"
-              >
-                Ver comprovante de pagamento
-              </a>
-            ) : null}
+            {renderProofCard(member)}
 
             <div className="mt-3 flex flex-wrap gap-2">
               {canConfirm(member) ? (

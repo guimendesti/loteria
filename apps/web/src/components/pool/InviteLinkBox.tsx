@@ -16,9 +16,14 @@ const dateFormatter = new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: 
 
 /**
  * CL-43 — link de convite + botão "Compartilhar no WhatsApp" com texto
- * pronto (texto conforme docs/09 §F3). A página pública que recebe esse link
- * (`(marketing)/bolao/[codigo]`) é território de outro agente da mesma onda.
+ * pronto (texto conforme docs/09 §F3).
+ *
+ * ⚠️ A rota pública é `/j/[inviteCode]` (`app/(marketing)/j/[inviteCode]/page.tsx`).
+ * Este arquivo já apontou para `/bolao/[codigo]`, que nunca existiu: todo link
+ * copiado e todo compartilhamento no WhatsApp davam 404 e o funil de convite
+ * inteiro ficava inacessível. Se mudar a rota, mude nos dois lugares.
  */
+const INVITE_PATH = '/j'
 export function InviteLinkBox({
   inviteCode,
   inviteExpiresAt,
@@ -28,7 +33,7 @@ export function InviteLinkBox({
   shareValueLabel,
 }: InviteLinkBoxProps) {
   const origin = typeof window !== 'undefined' ? window.location.origin : ''
-  const link = `${origin}/bolao/${inviteCode}`
+  const link = `${origin}${INVITE_PATH}/${inviteCode}`
   const whatsappText = `Criei nosso bolão da ${lotteryName} no LotoPro! 🎯 ${totalShares} cotas de ${shareValueLabel}. Entra aqui: ${link}`
   const whatsappHref = `https://wa.me/?text=${encodeURIComponent(whatsappText)}`
 

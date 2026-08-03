@@ -27,7 +27,7 @@ import { normalizePixKeyForPayload } from '@/server/lib/pix-key'
 import { toPaywallData, type Context } from '@/server/trpc'
 import { BetValidationError, PaywallError } from '@/server/errors'
 import { sharesRatioDecimalString } from '@/server/lib/pool/decimal'
-import { generateUniqueInviteCode } from '@/server/lib/pool/invite-code'
+import { alphabetIndexFromByte, generateUniqueInviteCode } from '@/server/lib/pool/invite-code'
 import { enqueuePoolNotify } from '@/server/lib/pool/notify-queue'
 import { maskOwnerPixKey, toPixKeyKind } from '@/server/lib/pool/pix'
 import {
@@ -82,6 +82,13 @@ function buildContext(prismaStubs: Record<string, unknown>, actorId: string = OW
       }
       return Promise.all(arg as Array<Promise<unknown>>)
     })
+  }
+  if (!('$queryRaw' in stubs)) {
+    // Achado J-1: `pool.join`/`members.addGuest` travam a linha do Pool (`SELECT ... FOR
+    // UPDATE` via `tx.$queryRaw`) antes de recontar cotas. Testes que não estão exercitando
+    // essa trava em si só precisam de um stub neutro — os describes dedicados abaixo
+    // ("trava a linha do Pool...") passam o próprio `$queryRaw` pra inspecionar a chamada.
+    stubs.$queryRaw = vi.fn().mockResolvedValue([])
   }
 
   return {
@@ -927,6 +934,309 @@ describe('pool.members.addGuest — não vende cota a mais (invariante 3)', () =
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Achado J-1 — pool.join / members.addGuest travam a linha do Pool antes de recontar
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('pool.join / pool.members.addGuest — travam a linha do Pool com FOR UPDATE antes de recontar cotas (achado de auditoria J-1)', () => {
+  it('pool.join emite SELECT ... FOR UPDATE no Pool ANTES de reagregar as cotas (prova a serialização)', async () => {
+    const callOrder: string[] = []
+    const findUnique = vi.fn().mockResolvedValue({
+      id: 'pool-1',
+      ownerId: OWNER_ID,
+      status: PoolStatus.OPEN,
+      totalShares: 5,
+      shareValueCents: 100n,
+      inviteExpiresAt: null,
+    })
+    const memberFindUnique = vi.fn().mockResolvedValue(null)
+    const queryRaw = vi.fn().mockImplementation(async () => {
+      callOrder.push('lock')
+      return [{ id: 'pool-1' }]
+    })
+    const aggregate = vi.fn().mockImplementation(async () => {
+      callOrder.push('aggregate')
+      return { _sum: { shares: 0 } }
+    })
+    const count = vi.fn().mockResolvedValue(1)
+    const create = vi.fn().mockResolvedValue({ id: 'new-member' })
+
+    const caller = createCaller(
+      buildContext(
+        {
+          pool: { findUnique },
+          poolMember: { findUnique: memberFindUnique, aggregate, count, create },
+          $queryRaw: queryRaw,
+          ...noActiveSubscriptionStub(),
+        },
+        MEMBER_ID_USER,
+      ),
+    )
+
+    await caller.join({ inviteCode: 'CODE1', shares: 1 })
+
+    expect(queryRaw).toHaveBeenCalledTimes(1)
+    const call = queryRaw.mock.calls[0] as unknown as [readonly string[], string]
+    expect(call[0].join('')).toContain('FOR UPDATE')
+    expect(call[0].join('')).toContain('"Pool"')
+    expect(call[1]).toBe('pool-1')
+    // A trava precisa ser a PRIMEIRA coisa dentro da transação — se a recontagem rodasse
+    // antes, a corrida que motivou o achado J-1 continuaria possível.
+    expect(callOrder).toEqual(['lock', 'aggregate'])
+  })
+
+  it('members.addGuest emite SELECT ... FOR UPDATE no Pool ANTES de reagregar as cotas', async () => {
+    const callOrder: string[] = []
+    const poolFindUnique = vi.fn().mockResolvedValue({
+      ownerId: OWNER_ID,
+      status: PoolStatus.OPEN,
+      totalShares: 5,
+      shareValueCents: 100n,
+    })
+    const queryRaw = vi.fn().mockImplementation(async () => {
+      callOrder.push('lock')
+      return [{ id: 'pool-1' }]
+    })
+    const aggregate = vi.fn().mockImplementation(async () => {
+      callOrder.push('aggregate')
+      return { _sum: { shares: 0 } }
+    })
+    const count = vi.fn().mockResolvedValue(1)
+    const create = vi.fn().mockResolvedValue({ id: 'new-member' })
+
+    const caller = createCaller(
+      buildContext(
+        { pool: { findUnique: poolFindUnique }, poolMember: { aggregate, count, create }, $queryRaw: queryRaw },
+        OWNER_ID,
+      ),
+    )
+
+    await caller.members.addGuest({ poolId: 'pool-1', guestName: 'Zé', shares: 1 })
+
+    expect(queryRaw).toHaveBeenCalledTimes(1)
+    const call = queryRaw.mock.calls[0] as unknown as [readonly string[], string]
+    expect(call[0].join('')).toContain('FOR UPDATE')
+    expect(call[1]).toBe('pool-1')
+    expect(callOrder).toEqual(['lock', 'aggregate'])
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Achado J-3 — receiptUrl/proofUrl exigem URL absoluta https://
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('pool.attachReceipt — exige URL absoluta https:// (achado de auditoria J-3)', () => {
+  it.each([
+    ['http://exemplo.com/comprovante.png', 'http em vez de https'],
+    ['javascript:alert(1)', 'esquema javascript:'],
+    ['data:text/html,<script>alert(1)</script>', 'esquema data:'],
+    ['/comprovante.png', 'caminho relativo, não é URL absoluta'],
+    ['nao-e-uma-url', 'string qualquer'],
+  ])('rejeita "%s" (%s) com BAD_REQUEST, sem gravar nada', async (badUrl) => {
+    const update = vi.fn()
+    const caller = createCaller(buildContext({ pool: { findUnique: vi.fn().mockResolvedValue({ ownerId: OWNER_ID }), update } }, OWNER_ID))
+
+    await expect(caller.attachReceipt({ poolId: 'pool-1', receiptUrl: badUrl })).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+    })
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it('aceita URL https:// absoluta válida', async () => {
+    const findUnique = vi.fn().mockResolvedValue({ ownerId: OWNER_ID })
+    const update = vi.fn().mockResolvedValue({ receiptUploadedAt: new Date('2026-01-01') })
+    const caller = createCaller(buildContext({ pool: { findUnique, update } }, OWNER_ID))
+
+    const result = await caller.attachReceipt({ poolId: 'pool-1', receiptUrl: 'https://r2.example.com/comprovante.png' })
+    expect(result).toEqual({ ok: true })
+  })
+})
+
+describe('pool.payments.declare — proofUrl exige URL absoluta https:// quando informado (achado de auditoria J-3)', () => {
+  function declareMemberStub() {
+    return {
+      id: 'member-1',
+      poolId: 'pool-1',
+      userId: MEMBER_ID_USER,
+      status: MemberStatus.JOINED,
+      amountCents: 500n,
+    }
+  }
+
+  it.each(['javascript:alert(document.cookie)', 'http://phishing.example.com/pix'])(
+    'rejeita proofUrl "%s"',
+    async (badUrl) => {
+      const findUnique = vi.fn().mockResolvedValue(declareMemberStub())
+      const create = vi.fn()
+      const caller = createCaller(buildContext({ poolMember: { findUnique }, poolPayment: { create } }, MEMBER_ID_USER))
+
+      await expect(caller.payments.declare({ memberId: 'member-1', proofUrl: badUrl })).rejects.toMatchObject({
+        code: 'BAD_REQUEST',
+      })
+      expect(create).not.toHaveBeenCalled()
+    },
+  )
+
+  it('aceita proofUrl https:// válido e continua funcionando sem proofUrl (campo opcional)', async () => {
+    const findUnique = vi.fn().mockResolvedValue(declareMemberStub())
+    const paymentCreate = vi.fn().mockResolvedValue({ id: 'payment-1' })
+    const memberUpdate = vi.fn().mockResolvedValue({ status: MemberStatus.PAID })
+    const caller = createCaller(
+      buildContext({ poolMember: { findUnique, update: memberUpdate }, poolPayment: { create: paymentCreate } }, MEMBER_ID_USER),
+    )
+
+    const withProof = await caller.payments.declare({ memberId: 'member-1', proofUrl: 'https://r2.example.com/comprovante.jpg' })
+    expect(withProof).toEqual({ status: MemberStatus.PAID })
+
+    const withoutProof = await caller.payments.declare({ memberId: 'member-1' })
+    expect(withoutProof).toEqual({ status: MemberStatus.PAID })
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Achado J-4 — proofUrl só para o dono ou o próprio membro
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('pool.detail — proofUrl só sai para o dono ou para o próprio membro (achado de auditoria J-4; o contrato listava sem essa restrição — bug do contrato, não do código)', () => {
+  const basePool = {
+    id: 'pool-1',
+    ownerId: OWNER_ID,
+    name: 'Bolão da galera',
+    status: PoolStatus.OPEN,
+    description: null,
+    inviteCode: 'SEGREDO123',
+    inviteExpiresAt: null,
+    receiptUrl: null,
+    ownerPixKeyType: null,
+    ownerPixKeyEnc: null,
+    contestFrom: 2800,
+    contestTo: 2800,
+    totalShares: 10,
+    totalCostCents: 1000n,
+    shareValueCents: 100n,
+    lottery: { slug: 'megasena', name: 'Mega-Sena' },
+    owner: { name: 'Dono do Bolão' },
+    bets: [],
+  }
+
+  function membersFixture() {
+    return [
+      {
+        id: 'm-self',
+        userId: MEMBER_ID_USER,
+        guestName: null,
+        shares: 1,
+        amountCents: 100n,
+        status: MemberStatus.PAID,
+        user: { name: 'Eu mesmo' },
+        payments: [{ confirmedAt: new Date('2026-01-01'), proofUrl: 'https://r2.example.com/meu-comprovante.png' }],
+      },
+      {
+        id: 'm-other',
+        userId: OTHER_USER_ID,
+        guestName: null,
+        shares: 2,
+        amountCents: 200n,
+        status: MemberStatus.PAID,
+        user: { name: 'Outro Participante' },
+        payments: [{ confirmedAt: new Date('2026-01-01'), proofUrl: 'https://r2.example.com/comprovante-alheio.png' }],
+      },
+    ]
+  }
+
+  it('participante comum vê o PRÓPRIO proofUrl mas nunca o de outro membro (documento com dados pessoais)', async () => {
+    const findUnique = vi.fn().mockResolvedValue({ ...basePool, members: membersFixture() })
+    const caller = createCaller(buildContext({ pool: { findUnique } }, MEMBER_ID_USER))
+
+    const result = await caller.detail({ poolId: 'pool-1' })
+    const self = result.members.find((member) => member.id === 'm-self')
+    const other = result.members.find((member) => member.id === 'm-other')
+
+    expect(self?.proofUrl).toBe('https://r2.example.com/meu-comprovante.png')
+    expect(other?.proofUrl).toBeNull()
+    expect(stringifyWithBigInt(result)).not.toContain('comprovante-alheio')
+  })
+
+  it('o dono vê o proofUrl de todos os membros (precisa conciliar todos os pagamentos)', async () => {
+    const findUnique = vi.fn().mockResolvedValue({ ...basePool, members: membersFixture() })
+    const caller = createCaller(buildContext({ pool: { findUnique } }, OWNER_ID))
+
+    const result = await caller.detail({ poolId: 'pool-1' })
+    expect(result.members.find((member) => member.id === 'm-self')?.proofUrl).toBe(
+      'https://r2.example.com/meu-comprovante.png',
+    )
+    expect(result.members.find((member) => member.id === 'm-other')?.proofUrl).toBe(
+      'https://r2.example.com/comprovante-alheio.png',
+    )
+  })
+
+  it('amountCents continua visível pra todo mundo — é função determinística de shares × shareValueCents, ambos já públicos no mesmo payload', async () => {
+    const findUnique = vi.fn().mockResolvedValue({ ...basePool, members: membersFixture() })
+    const caller = createCaller(buildContext({ pool: { findUnique } }, MEMBER_ID_USER))
+
+    const result = await caller.detail({ poolId: 'pool-1' })
+    expect(result.members.find((member) => member.id === 'm-other')?.amountCents).toBe(200n)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Achado J-5 — members.remove não deixa apagar quem já pagou/ganhou
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('pool.members.remove — trava de estado (achado de auditoria J-5)', () => {
+  it('bloqueia remover participante CONFIRMED mesmo com o bolão ainda OPEN', async () => {
+    const findUnique = vi.fn().mockResolvedValue({
+      status: MemberStatus.CONFIRMED,
+      pool: { ownerId: OWNER_ID, status: PoolStatus.OPEN },
+    })
+    const update = vi.fn()
+    const caller = createCaller(buildContext({ poolMember: { findUnique, update } }, OWNER_ID))
+
+    await expect(caller.members.remove({ memberId: 'member-1' })).rejects.toMatchObject({ code: 'BAD_REQUEST' })
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it.each([PoolStatus.BET_PLACED, PoolStatus.SETTLED])(
+    'bloqueia remover QUALQUER participante depois que o bolão passou de CLOSED (status %s), mesmo sem CONFIRMED',
+    async (poolStatus) => {
+      const findUnique = vi.fn().mockResolvedValue({
+        status: MemberStatus.JOINED,
+        pool: { ownerId: OWNER_ID, status: poolStatus },
+      })
+      const update = vi.fn()
+      const caller = createCaller(buildContext({ poolMember: { findUnique, update } }, OWNER_ID))
+
+      await expect(caller.members.remove({ memberId: 'member-1' })).rejects.toMatchObject({ code: 'BAD_REQUEST' })
+      expect(update).not.toHaveBeenCalled()
+    },
+  )
+
+  it('permite remover participante JOINED/PAID enquanto o bolão ainda está OPEN (gestão normal de convite)', async () => {
+    const findUnique = vi.fn().mockResolvedValue({
+      status: MemberStatus.PAID,
+      pool: { ownerId: OWNER_ID, status: PoolStatus.OPEN },
+    })
+    const update = vi.fn().mockResolvedValue({})
+    const caller = createCaller(buildContext({ poolMember: { findUnique, update } }, OWNER_ID))
+
+    const result = await caller.members.remove({ memberId: 'member-1' })
+    expect(result).toEqual({ ok: true })
+    expect(update).toHaveBeenCalledWith({ where: { id: 'member-1' }, data: { status: MemberStatus.REMOVED } })
+  })
+
+  it('só o dono pode remover (autorização continua valendo)', async () => {
+    const findUnique = vi.fn().mockResolvedValue({
+      status: MemberStatus.JOINED,
+      pool: { ownerId: OWNER_ID, status: PoolStatus.OPEN },
+    })
+    const update = vi.fn()
+    const caller = createCaller(buildContext({ poolMember: { findUnique, update } }, OTHER_USER_ID))
+
+    await expect(caller.members.remove({ memberId: 'member-1' })).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    expect(update).not.toHaveBeenCalled()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Máquina de estados — BET_PLACED exige receiptUrl
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -973,19 +1283,21 @@ describe('pool.updateStatus — máquina de estados', () => {
 
 describe('pool.payout.compute — idempotente, sem duplicar nem inflar (invariante 6)', () => {
   it('rodar duas vezes devolve o mesmo resultado e a segunda vez só faz UPDATE (nunca CREATE de novo)', async () => {
-    const pool = { id: 'pool-1', ownerId: OWNER_ID, totalShares: 10 }
+    const pool = { id: 'pool-1', ownerId: OWNER_ID, totalShares: 10, lotteryId: 'lottery-1', contestFrom: 2800, contestTo: 2800 }
     const poolFindUnique = vi.fn().mockResolvedValue(pool)
-    const contestFindUnique = vi.fn().mockResolvedValue({ id: 'contest-1' })
+    const contestFindUnique = vi.fn().mockResolvedValue({ id: 'contest-1', lotteryId: 'lottery-1', number: 2800 })
+    // Achado J-6: só CONFIRMED entra no rateio — os dois membros aqui precisam estar
+    // CONFIRMED pra este teste de idempotência continuar valendo a pena.
     const members = [
-      { id: 'member-1', shares: 6 },
-      { id: 'member-2', shares: 4 },
+      { id: 'member-1', shares: 6, status: MemberStatus.CONFIRMED },
+      { id: 'member-2', shares: 4, status: MemberStatus.CONFIRMED },
     ]
     const memberFindMany = vi.fn().mockResolvedValue(members)
     const betCheckAggregate = vi.fn().mockResolvedValue({ _sum: { prizeCents: 1000n } })
 
     const payoutCreate = vi.fn().mockResolvedValue({})
     const payoutUpdate = vi.fn().mockResolvedValue({})
-    let existingRows: Array<{ poolMemberId: string }> = []
+    let existingRows: Array<{ poolMemberId: string; status: PayoutStatus }> = []
     const payoutFindMany = vi.fn().mockImplementation(async () => existingRows)
 
     const ctx = buildContext(
@@ -1007,11 +1319,16 @@ describe('pool.payout.compute — idempotente, sem duplicar nem inflar (invarian
     ])
     expect(first.remainderCents).toBe(0n)
     expect(first.totalCents).toBe(1000n)
+    expect(first.unconfirmedShares).toBe(0)
     expect(payoutCreate).toHaveBeenCalledTimes(2)
     expect(payoutUpdate).not.toHaveBeenCalled()
 
-    // A partir daqui, os dois payouts já existem no "banco" — simula o recálculo.
-    existingRows = [{ poolMemberId: 'member-1' }, { poolMemberId: 'member-2' }]
+    // A partir daqui, os dois payouts já existem no "banco" (ainda PENDING) — simula o
+    // recálculo.
+    existingRows = [
+      { poolMemberId: 'member-1', status: PayoutStatus.PENDING },
+      { poolMemberId: 'member-2', status: PayoutStatus.PENDING },
+    ]
     payoutCreate.mockClear()
     payoutUpdate.mockClear()
 
@@ -1019,6 +1336,230 @@ describe('pool.payout.compute — idempotente, sem duplicar nem inflar (invarian
     expect(second).toEqual(first)
     expect(payoutCreate).not.toHaveBeenCalled()
     expect(payoutUpdate).toHaveBeenCalledTimes(2)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Achado J-1 (degradação) — payout.compute nunca vira 500 cru em dado legado inconsistente
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('pool.payout.compute — degrada com elegância se a invariante de cotas foi violada por dado legado (achado de auditoria J-1)', () => {
+  it('soma de cotas CONFIRMED acima do totalShares do bolão nunca vira 500 cru — TRPCError tratado, em português', async () => {
+    const pool = { id: 'pool-1', ownerId: OWNER_ID, totalShares: 5, lotteryId: 'lottery-1', contestFrom: 2800, contestTo: 2800 }
+    const poolFindUnique = vi.fn().mockResolvedValue(pool)
+    const contestFindUnique = vi.fn().mockResolvedValue({ id: 'contest-1', lotteryId: 'lottery-1', number: 2800 })
+    // Dado legado inconsistente: 4 + 4 = 8 cotas CONFIRMED num bolão de totalShares: 5 — só
+    // podia acontecer com dado gravado ANTES da trava do achado J-1 (`FOR UPDATE`).
+    const memberFindMany = vi.fn().mockResolvedValue([
+      { id: 'member-1', shares: 4, status: MemberStatus.CONFIRMED },
+      { id: 'member-2', shares: 4, status: MemberStatus.CONFIRMED },
+    ])
+    const betCheckAggregate = vi.fn().mockResolvedValue({ _sum: { prizeCents: 1000n } })
+    const caller = createCaller(
+      buildContext(
+        {
+          pool: { findUnique: poolFindUnique },
+          contest: { findUnique: contestFindUnique },
+          poolMember: { findMany: memberFindMany },
+          betCheck: { aggregate: betCheckAggregate },
+        },
+        OWNER_ID,
+      ),
+    )
+
+    await expect(caller.payout.compute({ poolId: 'pool-1', contestId: 'contest-1' })).rejects.toMatchObject({
+      code: 'CONFLICT',
+      message: expect.stringContaining('inconsistentes'),
+    })
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Achado J-2 — contestId validado contra a modalidade e a faixa do bolão
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('pool.payout.compute — contestId validado contra modalidade e faixa do bolão (achado de auditoria J-2)', () => {
+  function poolStub() {
+    return { id: 'pool-1', ownerId: OWNER_ID, totalShares: 10, lotteryId: 'lottery-megasena', contestFrom: 2800, contestTo: 2805 }
+  }
+
+  it('concurso de OUTRA modalidade é rejeitado com BAD_REQUEST, sem criar PoolPayout nem notificar', async () => {
+    const poolFindUnique = vi.fn().mockResolvedValue(poolStub())
+    const contestFindUnique = vi.fn().mockResolvedValue({ id: 'contest-x', lotteryId: 'lottery-lotofacil', number: 2800 })
+    const payoutCreate = vi.fn()
+    const caller = createCaller(
+      buildContext(
+        { pool: { findUnique: poolFindUnique }, contest: { findUnique: contestFindUnique }, poolPayout: { create: payoutCreate } },
+        OWNER_ID,
+      ),
+    )
+
+    await expect(caller.payout.compute({ poolId: 'pool-1', contestId: 'contest-x' })).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+    })
+    expect(payoutCreate).not.toHaveBeenCalled()
+    expect(enqueuePoolNotify).not.toHaveBeenCalled()
+  })
+
+  it('concurso da MESMA modalidade mas FORA da faixa contestFrom..contestTo é rejeitado', async () => {
+    const poolFindUnique = vi.fn().mockResolvedValue(poolStub())
+    const contestFindUnique = vi.fn().mockResolvedValue({ id: 'contest-y', lotteryId: 'lottery-megasena', number: 9999 })
+    const payoutCreate = vi.fn()
+    const caller = createCaller(
+      buildContext(
+        { pool: { findUnique: poolFindUnique }, contest: { findUnique: contestFindUnique }, poolPayout: { create: payoutCreate } },
+        OWNER_ID,
+      ),
+    )
+
+    await expect(caller.payout.compute({ poolId: 'pool-1', contestId: 'contest-y' })).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+    })
+    expect(payoutCreate).not.toHaveBeenCalled()
+  })
+
+  it('concurso válido mas SEM prêmio (grossPrizeCents 0) grava a conferência mas NÃO dispara "bolão premiado"', async () => {
+    const poolFindUnique = vi.fn().mockResolvedValue(poolStub())
+    const contestFindUnique = vi.fn().mockResolvedValue({ id: 'contest-1', lotteryId: 'lottery-megasena', number: 2801 })
+    const memberFindMany = vi.fn().mockResolvedValue([{ id: 'member-1', shares: 10, status: MemberStatus.CONFIRMED }])
+    const betCheckAggregate = vi.fn().mockResolvedValue({ _sum: { prizeCents: null } })
+    const payoutFindMany = vi.fn().mockResolvedValue([])
+    const payoutCreate = vi.fn().mockResolvedValue({})
+    const caller = createCaller(
+      buildContext(
+        {
+          pool: { findUnique: poolFindUnique },
+          contest: { findUnique: contestFindUnique },
+          poolMember: { findMany: memberFindMany },
+          betCheck: { aggregate: betCheckAggregate },
+          poolPayout: { findMany: payoutFindMany, create: payoutCreate },
+        },
+        OWNER_ID,
+      ),
+    )
+
+    const result = await caller.payout.compute({ poolId: 'pool-1', contestId: 'contest-1' })
+    expect(result.totalCents).toBe(0n)
+    expect(payoutCreate).toHaveBeenCalledTimes(1)
+    expect(enqueuePoolNotify).not.toHaveBeenCalled()
+  })
+
+  it('concurso válido COM prêmio de verdade notifica "payout.computed" normalmente', async () => {
+    const poolFindUnique = vi.fn().mockResolvedValue(poolStub())
+    const contestFindUnique = vi.fn().mockResolvedValue({ id: 'contest-1', lotteryId: 'lottery-megasena', number: 2800 })
+    const memberFindMany = vi.fn().mockResolvedValue([{ id: 'member-1', shares: 10, status: MemberStatus.CONFIRMED }])
+    const betCheckAggregate = vi.fn().mockResolvedValue({ _sum: { prizeCents: 5000n } })
+    const payoutFindMany = vi.fn().mockResolvedValue([])
+    const payoutCreate = vi.fn().mockResolvedValue({})
+    const caller = createCaller(
+      buildContext(
+        {
+          pool: { findUnique: poolFindUnique },
+          contest: { findUnique: contestFindUnique },
+          poolMember: { findMany: memberFindMany },
+          betCheck: { aggregate: betCheckAggregate },
+          poolPayout: { findMany: payoutFindMany, create: payoutCreate },
+        },
+        OWNER_ID,
+      ),
+    )
+
+    await caller.payout.compute({ poolId: 'pool-1', contestId: 'contest-1' })
+    expect(enqueuePoolNotify).toHaveBeenCalledWith({ event: 'payout.computed', poolId: 'pool-1', contestId: 'contest-1' })
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Achado J-6 — rateio considera só CONFIRMED; não-confirmado fica visível, não redistribuído
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('pool.payout.compute — só CONFIRMED entra no rateio; cotas não confirmadas ficam visíveis, nunca redistribuídas (achado de auditoria J-6)', () => {
+  it('membro JOINED/PAID (nunca CONFIRMED) fica fora de result.shares; aparece em unconfirmedShares/unconfirmedMemberIds', async () => {
+    const pool = { id: 'pool-1', ownerId: OWNER_ID, totalShares: 10, lotteryId: 'lottery-1', contestFrom: 2800, contestTo: 2800 }
+    const poolFindUnique = vi.fn().mockResolvedValue(pool)
+    const contestFindUnique = vi.fn().mockResolvedValue({ id: 'contest-1', lotteryId: 'lottery-1', number: 2800 })
+    const members = [
+      { id: 'member-confirmed', shares: 6, status: MemberStatus.CONFIRMED },
+      { id: 'member-paid-not-confirmed', shares: 3, status: MemberStatus.PAID },
+      { id: 'member-joined', shares: 1, status: MemberStatus.JOINED },
+    ]
+    const memberFindMany = vi.fn().mockResolvedValue(members)
+    const betCheckAggregate = vi.fn().mockResolvedValue({ _sum: { prizeCents: 1000n } })
+    const payoutFindMany = vi.fn().mockResolvedValue([])
+    const payoutCreate = vi.fn().mockResolvedValue({})
+
+    const caller = createCaller(
+      buildContext(
+        {
+          pool: { findUnique: poolFindUnique },
+          contest: { findUnique: contestFindUnique },
+          poolMember: { findMany: memberFindMany },
+          betCheck: { aggregate: betCheckAggregate },
+          poolPayout: { findMany: payoutFindMany, create: payoutCreate },
+        },
+        OWNER_ID,
+      ),
+    )
+
+    const result = await caller.payout.compute({ poolId: 'pool-1', contestId: 'contest-1' })
+
+    // Só quem CONFIRMOU entra na conta — 6/10 (totalShares DO BOLÃO, não da soma de quem
+    // confirmou) × 1000 = 600. As 4 cotas não confirmadas (3 + 1) caem no resto do
+    // organizador, exatamente como cota nunca vendida — nunca redistribuídas pra quem
+    // confirmou.
+    expect(result.shares).toEqual([{ memberId: 'member-confirmed', shares: 6, amountCents: 600n }])
+    expect(result.remainderCents).toBe(400n)
+    expect(result.unconfirmedShares).toBe(4)
+    expect([...result.unconfirmedMemberIds].sort()).toEqual(['member-joined', 'member-paid-not-confirmed'])
+    expect(payoutCreate).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Achado menor — recalcular nunca sobrescreve amountCents de linha já paga/declarada
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('pool.payout.compute — recalcular NUNCA sobrescreve amountCents de uma linha já paga/declarada (achado menor)', () => {
+  it('linha DECLARED_PAID é preservada; só a linha ainda PENDING é atualizada', async () => {
+    const pool = { id: 'pool-1', ownerId: OWNER_ID, totalShares: 10, lotteryId: 'lottery-1', contestFrom: 2800, contestTo: 2800 }
+    const poolFindUnique = vi.fn().mockResolvedValue(pool)
+    const contestFindUnique = vi.fn().mockResolvedValue({ id: 'contest-1', lotteryId: 'lottery-1', number: 2800 })
+    const members = [
+      { id: 'member-paid', shares: 6, status: MemberStatus.CONFIRMED },
+      { id: 'member-pending', shares: 4, status: MemberStatus.CONFIRMED },
+    ]
+    const memberFindMany = vi.fn().mockResolvedValue(members)
+    // Prêmio recalculado diferente do que já foi de fato pago via Pix pro member-paid.
+    const betCheckAggregate = vi.fn().mockResolvedValue({ _sum: { prizeCents: 2000n } })
+    const payoutFindMany = vi.fn().mockResolvedValue([
+      { poolMemberId: 'member-paid', status: PayoutStatus.DECLARED_PAID },
+      { poolMemberId: 'member-pending', status: PayoutStatus.PENDING },
+    ])
+    const payoutCreate = vi.fn()
+    const payoutUpdate = vi.fn().mockResolvedValue({})
+
+    const caller = createCaller(
+      buildContext(
+        {
+          pool: { findUnique: poolFindUnique },
+          contest: { findUnique: contestFindUnique },
+          poolMember: { findMany: memberFindMany },
+          betCheck: { aggregate: betCheckAggregate },
+          poolPayout: { findMany: payoutFindMany, create: payoutCreate, update: payoutUpdate },
+        },
+        OWNER_ID,
+      ),
+    )
+
+    await caller.payout.compute({ poolId: 'pool-1', contestId: 'contest-1' })
+
+    expect(payoutCreate).not.toHaveBeenCalled()
+    expect(payoutUpdate).toHaveBeenCalledTimes(1)
+    expect(payoutUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { poolMemberId_contestId: { poolMemberId: 'member-pending', contestId: 'contest-1' } },
+      }),
+    )
   })
 })
 
@@ -1265,6 +1806,29 @@ describe('server/lib/pool/decimal — sharesRatioDecimalString (invariante 7: st
     expect(() => sharesRatioDecimalString(-1, 5)).toThrow()
     expect(() => sharesRatioDecimalString(1, 0)).toThrow()
     expect(() => sharesRatioDecimalString(1.5, 5)).toThrow()
+  })
+})
+
+describe('server/lib/pool/invite-code — alphabetIndexFromByte sem viés (achado menor)', () => {
+  it('rejeita exatamente os bytes 248..255 (256 − 8×31) em vez de enviesar os 8 primeiros símbolos via `byte % 31`', () => {
+    // Antes: `byte % 31` fazia os bytes 248..255 caírem de novo nos índices 0..7 — os 8
+    // primeiros símbolos do alfabeto saíam ~12,5% mais vezes que os outros 23.
+    for (let byte = 0; byte < 248; byte++) {
+      expect(alphabetIndexFromByte(byte, 31)).toBe(byte % 31)
+    }
+    for (let byte = 248; byte <= 255; byte++) {
+      expect(alphabetIndexFromByte(byte, 31)).toBeNull()
+    }
+  })
+
+  it('nunca devolve um índice fora de [0, alphabetLength)', () => {
+    for (let byte = 0; byte < 256; byte++) {
+      const index = alphabetIndexFromByte(byte, 31)
+      if (index !== null) {
+        expect(index).toBeGreaterThanOrEqual(0)
+        expect(index).toBeLessThan(31)
+      }
+    }
   })
 })
 

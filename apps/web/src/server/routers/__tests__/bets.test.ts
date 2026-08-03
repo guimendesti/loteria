@@ -302,6 +302,129 @@ describe('bets.create — poolId opcional', () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
+// bets.update — congelamento de bolão também vale para editar dezenas (achado de
+// auditoria, severidade alta, corrigido)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('bets.update — trava de congelamento do bolão (regressão de segurança)', () => {
+  /** Jogo já vinculado a um bolão, sem nenhum check ainda (dezenas normalmente editáveis). */
+  function pooledBetStub(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'bet-1',
+      userId: OWNER_ID,
+      poolId: 'pool-1',
+      numbers: [1, 2, 3, 4, 5, 6],
+      extraPicks: null,
+      columns: null,
+      contestFrom: 2800,
+      contestTo: 2800,
+      lottery: { slug: 'megasena' },
+      _count: { checks: 0 },
+      ...overrides,
+    }
+  }
+
+  it(
+    '★ REGRESSÃO: bolão em BET_PLACED — trocar as dezenas de um jogo vinculado é bloqueado ' +
+      '(antes da correção isto passava direto: bets.update só checava dono + "sem checks", nunca o status do bolão)',
+    async () => {
+      const betFindUnique = vi.fn().mockResolvedValue(pooledBetStub())
+      const poolFindUnique = vi.fn().mockResolvedValue(poolStub({ status: PoolStatus.BET_PLACED }))
+      const betUpdate = vi.fn()
+      const caller = createCaller(
+        buildContext(
+          { bet: { findUnique: betFindUnique, update: betUpdate }, pool: { findUnique: poolFindUnique } },
+          OWNER_ID,
+        ),
+      )
+
+      await expect(
+        caller.update({ id: 'bet-1', numbers: [10, 20, 30, 40, 50, 60] }),
+      ).rejects.toMatchObject({
+        code: 'BAD_REQUEST',
+        message: expect.stringMatching(/lotérica|registrados/i),
+      })
+      expect(betUpdate).not.toHaveBeenCalled()
+      // A trava consulta o MESMO bolão vinculado ao jogo, não um bolão qualquer.
+      expect(poolFindUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'pool-1' } }))
+    },
+  )
+
+  it('bolão SETTLED (encerrado) também bloqueia a troca de dezenas', async () => {
+    const betFindUnique = vi.fn().mockResolvedValue(pooledBetStub())
+    const poolFindUnique = vi.fn().mockResolvedValue(poolStub({ status: PoolStatus.SETTLED }))
+    const betUpdate = vi.fn()
+    const caller = createCaller(
+      buildContext(
+        { bet: { findUnique: betFindUnique, update: betUpdate }, pool: { findUnique: poolFindUnique } },
+        OWNER_ID,
+      ),
+    )
+
+    await expect(caller.update({ id: 'bet-1', numbers: [10, 20, 30, 40, 50, 60] })).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+    })
+    expect(betUpdate).not.toHaveBeenCalled()
+  })
+
+  it('bolão ainda editável (OPEN) permite trocar as dezenas do jogo vinculado normalmente', async () => {
+    const betFindUnique = vi.fn().mockResolvedValue(pooledBetStub())
+    const poolFindUnique = vi.fn().mockResolvedValue(poolStub({ status: PoolStatus.OPEN }))
+    const updated = { id: 'bet-1', numbers: [10, 20, 30, 40, 50, 60] }
+    const betUpdate = vi.fn().mockResolvedValue(updated)
+    const caller = createCaller(
+      buildContext(
+        { bet: { findUnique: betFindUnique, update: betUpdate }, pool: { findUnique: poolFindUnique } },
+        OWNER_ID,
+      ),
+    )
+
+    const result = await caller.update({ id: 'bet-1', numbers: [10, 20, 30, 40, 50, 60] })
+
+    expect(result).toEqual(updated)
+    expect(betUpdate).toHaveBeenCalledTimes(1)
+  })
+
+  it('jogo vinculado a bolão BET_PLACED: editar só notes/isActive (sem tocar no jogo) NÃO é bloqueado', async () => {
+    // A trava é só para campos que mudam o JOGO (dezenas/extra/colunas) — notes/isActive
+    // não afetam o que já foi registrado na lotérica, então nem precisam consultar o bolão.
+    const betFindUnique = vi.fn().mockResolvedValue(pooledBetStub())
+    const poolFindUnique = vi.fn()
+    const updated = { id: 'bet-1', notes: 'atualizado' }
+    const betUpdate = vi.fn().mockResolvedValue(updated)
+    const caller = createCaller(
+      buildContext(
+        { bet: { findUnique: betFindUnique, update: betUpdate }, pool: { findUnique: poolFindUnique } },
+        OWNER_ID,
+      ),
+    )
+
+    const result = await caller.update({ id: 'bet-1', notes: 'atualizado' })
+
+    expect(result).toEqual(updated)
+    expect(poolFindUnique).not.toHaveBeenCalled()
+  })
+
+  it('jogo SEM bolão (poolId: null) nunca consulta Pool ao editar dezenas (comportamento anterior preservado)', async () => {
+    const betFindUnique = vi.fn().mockResolvedValue(pooledBetStub({ poolId: null }))
+    const poolFindUnique = vi.fn()
+    const updated = { id: 'bet-1', numbers: [10, 20, 30, 40, 50, 60] }
+    const betUpdate = vi.fn().mockResolvedValue(updated)
+    const caller = createCaller(
+      buildContext(
+        { bet: { findUnique: betFindUnique, update: betUpdate }, pool: { findUnique: poolFindUnique } },
+        OWNER_ID,
+      ),
+    )
+
+    const result = await caller.update({ id: 'bet-1', numbers: [10, 20, 30, 40, 50, 60] })
+
+    expect(result).toEqual(updated)
+    expect(poolFindUnique).not.toHaveBeenCalled()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
 // bets.byPool — consolidação de custo dos jogos vinculados (missão §2)
 // ─────────────────────────────────────────────────────────────────────────────
 

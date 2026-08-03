@@ -125,6 +125,47 @@ export function assertCanLeavePool(current: MemberStatus): void {
   }
 }
 
+/** Estados de `Pool.status` a partir dos quais `members.remove` já não pode mais mexer no
+ * roster (achado de auditoria J-5). A partir de `BET_PLACED` a aposta já foi comprada com
+ * base nesse roster/rateio de cotas — remover alguém depois disso não desfaz o jogo já
+ * feito, só corrompe a contabilidade (a linha vira órfã, sem aparecer no rateio nem no
+ * histórico de quem realmente jogou). `SETTLED` é ainda mais tarde (já pode ter rateio
+ * calculado apontando pra essa pessoa). */
+const MEMBER_REMOVAL_BLOCKED_POOL_STATUSES: readonly PoolStatus[] = [PoolStatus.BET_PLACED, PoolStatus.SETTLED]
+
+/**
+ * O organizador remove um participante (`pool.members.remove`). Diferente de `pool.leave`
+ * (que é o PRÓPRIO membro saindo — trava em `PAID`, porque o Pix da COTA dele pode já ter
+ * saído), aqui é o organizador removendo OUTRA pessoa unilateralmente. Sem trava nenhuma,
+ * dava pra remover alguém já `CONFIRMED` — inclusive depois de premiado — fazendo a pessoa
+ * sumir do rateio e perder acesso ao bolão sem nenhum motivo formal registrado. Bloqueia:
+ * (a) participante com pagamento já `CONFIRMED` — ele tem direito ao rateio se o bolão
+ *     premiar; "remover" nesse ponto não é mais gestão de convite, é apagar uma dívida;
+ * (b) qualquer participante depois que o bolão passou de `CLOSED` (`BET_PLACED`/`SETTLED`)
+ *     — a aposta já foi feita com base nesse roster.
+ */
+export function assertCanRemoveMember(memberStatus: MemberStatus, poolStatus: PoolStatus): void {
+  if (memberStatus === MemberStatus.CONFIRMED) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message:
+        'Não é possível remover um participante com pagamento já CONFIRMADO — ele tem direito ao ' +
+        'rateio se o bolão for premiado. Se ele realmente está saindo, resolva o repasse combinado ' +
+        'fora do app antes (ou cancele o bolão, se for o caso).',
+    })
+  }
+
+  if (MEMBER_REMOVAL_BLOCKED_POOL_STATUSES.includes(poolStatus)) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message:
+        'Não é possível remover participantes depois que a aposta foi registrada — o roster deste ' +
+        'ponto em diante é o que define quem tem direito ao rateio. Fale diretamente com a pessoa ' +
+        'se for preciso resolver algo fora do app.',
+    })
+  }
+}
+
 // ─── PoolPayout.status ────────────────────────────────────────────────────────
 
 /**

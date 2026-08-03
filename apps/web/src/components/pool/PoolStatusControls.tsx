@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { trpc } from '@/lib/trpc'
 import { ConfirmDialog } from './ConfirmDialog'
+import { safeExternalHref } from './safe-external-href'
 import type { PoolStatus } from './types'
 
 export interface PoolStatusControlsProps {
@@ -91,12 +92,24 @@ export function PoolStatusControls({ poolId, status, receiptUrl, onChanged }: Po
           </p>
 
           {receiptUrl ? (
-            <p className="mt-2 text-sm text-success">
-              Comprovante anexado.{' '}
-              <a href={receiptUrl} target="_blank" rel="noreferrer" className="underline">
-                Ver
-              </a>
-            </p>
+            // Defesa em profundidade: `receiptUrl` pode ter sido gravado antes da validação de
+            // entrada existir, ou vir de uma linha antiga no banco — ver `safe-external-href.ts`.
+            (() => {
+              const safeHref = safeExternalHref(receiptUrl)
+              return safeHref ? (
+                <p className="mt-2 text-sm text-success">
+                  Comprovante anexado.{' '}
+                  <a href={safeHref} target="_blank" rel="noopener noreferrer" className="underline">
+                    Ver
+                  </a>{' '}
+                  <span className="text-xs text-ink-400">(link externo, não verificado pelo LotoPro)</span>
+                </p>
+              ) : (
+                <p className="mt-2 text-sm text-danger">
+                  Comprovante anexado, mas o link salvo não é um endereço válido — anexe novamente.
+                </p>
+              )
+            })()
           ) : (
             <div className="mt-2 flex flex-wrap gap-2">
               <label className="sr-only" htmlFor="receipt-url">

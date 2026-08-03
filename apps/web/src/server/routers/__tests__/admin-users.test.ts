@@ -206,3 +206,135 @@ describe('admin.users.toggleBlock — bloqueio administrativo real (BO-13)', () 
     expect(findUnique).not.toHaveBeenCalled()
   })
 })
+
+/**
+ * Testes de `admin.users.anonymize` (BO-15) — anonimização LGPD via backoffice.
+ *
+ * ★ Foco desta suíte (achado de auditoria, severidade média, corrigido): antes da correção,
+ * `anonymize` zerava `User.pixKeyEncrypted`/`pixKeyType` mas nunca o SNAPSHOT
+ * `Pool.ownerPixKeyEnc`/`ownerPixKeyType` gravado em cada bolão que o usuário organiza —
+ * consequência: os membros desses bolões continuavam vendo a chave mascarada e o app
+ * continuava montando um BR Code Pix válido pagando alguém já anonimizado. A correção move
+ * `user.update` + `pool.updateMany` (+ `account`/`session` `deleteMany`) para dentro de uma
+ * única `$transaction`, então esta suíte também prova a atomicidade (antes, só
+ * `account`/`session` corriam juntos num `Promise.all`; `user.update` corria solto).
+ */
+describe('admin.users.anonymize — anonimização LGPD (BO-15)', () => {
+  const ANONYMIZED_EMAIL = `anon-${TARGET_USER_ID}@deleted.lotopro.invalid`
+  const ANONYMIZED_AT = new Date('2026-08-03T12:00:00Z')
+
+  function buildAnonymizeStubs(initialDeletedAt: Date | null = null) {
+    const findUnique = vi.fn().mockResolvedValue({ id: TARGET_USER_ID, deletedAt: initialDeletedAt })
+    const userUpdate = vi
+      .fn()
+      .mockReturnValue({ id: TARGET_USER_ID, email: ANONYMIZED_EMAIL, deletedAt: ANONYMIZED_AT })
+    const poolUpdateMany = vi.fn().mockReturnValue({ count: 2 })
+    const accountDeleteMany = vi.fn().mockReturnValue({ count: 1 })
+    const sessionDeleteMany = vi.fn().mockReturnValue({ count: 3 })
+    // Mesmo padrão de `account.test.ts`: `$transaction` recebe o array de operações JÁ
+    // AVALIADAS (cada `vi.fn().mockReturnValue(...)` roda de forma síncrona quando chamado
+    // dentro do array-literal do router) e simplesmente as devolve — replica o que o
+    // Prisma real faz na forma array de `$transaction`.
+    const transaction = vi.fn(async (ops: unknown[]) => ops)
+    const auditCreate = vi.fn().mockResolvedValue({})
+
+    return {
+      stubs: {
+        user: { findUnique, update: userUpdate },
+        pool: { updateMany: poolUpdateMany },
+        account: { deleteMany: accountDeleteMany },
+        session: { deleteMany: sessionDeleteMany },
+        auditLog: { create: auditCreate },
+        $transaction: transaction,
+      },
+      findUnique,
+      userUpdate,
+      poolUpdateMany,
+      accountDeleteMany,
+      sessionDeleteMany,
+      transaction,
+      auditCreate,
+    }
+  }
+
+  it(
+    '★ REGRESSÃO LGPD: limpa Pool.ownerPixKeyEnc/ownerPixKeyType dos bolões que o usuário ' +
+      'organiza, na MESMA transação de user.update/account.deleteMany/session.deleteMany',
+    async () => {
+      const { stubs, poolUpdateMany, transaction, userUpdate, accountDeleteMany, sessionDeleteMany } =
+        buildAnonymizeStubs()
+      const caller = createCaller(buildContext(stubs))
+
+      const result = await caller.anonymize({ userId: TARGET_USER_ID, reason: 'pedido via suporte, ticket #123' })
+
+      expect(result).toEqual({ userId: TARGET_USER_ID, anonymizedAt: ANONYMIZED_AT })
+
+      expect(poolUpdateMany).toHaveBeenCalledWith({
+        where: { ownerId: TARGET_USER_ID },
+        data: { ownerPixKeyEnc: null, ownerPixKeyType: null },
+      })
+
+      // As 4 operações rodam na MESMA `$transaction`, nesta ordem.
+      expect(transaction).toHaveBeenCalledTimes(1)
+      expect(transaction.mock.calls[0]?.[0]).toEqual([
+        userUpdate.mock.results[0]?.value,
+        poolUpdateMany.mock.results[0]?.value,
+        accountDeleteMany.mock.results[0]?.value,
+        sessionDeleteMany.mock.results[0]?.value,
+      ])
+    },
+  )
+
+  it('também limpa User.pixKeyEncrypted/pixKeyType, além do snapshot em Pool', async () => {
+    const { stubs, userUpdate } = buildAnonymizeStubs()
+    const caller = createCaller(buildContext(stubs))
+
+    await caller.anonymize({ userId: TARGET_USER_ID, reason: 'pedido via suporte, ticket #123' })
+
+    const savedData = (userUpdate.mock.calls[0]?.[0] as { data: { pixKeyEncrypted: string | null; pixKeyType: string | null } })
+      .data
+    expect(savedData.pixKeyEncrypted).toBeNull()
+    expect(savedData.pixKeyType).toBeNull()
+  })
+
+  it('rejeita auto-anonimização (lockout) — BAD_REQUEST, nunca chega a consultar o Prisma', async () => {
+    const { stubs, findUnique, transaction } = buildAnonymizeStubs()
+    const caller = createCaller(buildContext(stubs))
+
+    await expect(
+      caller.anonymize({ userId: ADMIN_ID, reason: 'tentativa de auto-anonimização' }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' })
+    expect(findUnique).not.toHaveBeenCalled()
+    expect(transaction).not.toHaveBeenCalled()
+  })
+
+  it('404 quando o usuário não existe', async () => {
+    const findUnique = vi.fn().mockResolvedValue(null)
+    const caller = createCaller(buildContext({ user: { findUnique } }))
+
+    await expect(caller.anonymize({ userId: 'inexistente', reason: 'x'.repeat(10) })).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    })
+  })
+
+  it('rejeita usuário já anonimizado antes — CONFLICT, sem tocar em Pool/Account/Session', async () => {
+    const { stubs, transaction, poolUpdateMany } = buildAnonymizeStubs(new Date('2026-01-01T00:00:00Z'))
+    const caller = createCaller(buildContext(stubs))
+
+    await expect(
+      caller.anonymize({ userId: TARGET_USER_ID, reason: 'pedido duplicado' }),
+    ).rejects.toMatchObject({ code: 'CONFLICT' })
+    expect(transaction).not.toHaveBeenCalled()
+    expect(poolUpdateMany).not.toHaveBeenCalled()
+  })
+
+  it('só ADMIN tem permissão — SUPPORT recebe FORBIDDEN antes de tocar no Prisma', async () => {
+    const { stubs, findUnique } = buildAnonymizeStubs()
+    const caller = createCaller(buildContext(stubs, 'SUPPORT'))
+
+    await expect(
+      caller.anonymize({ userId: TARGET_USER_ID, reason: 'tentativa fora do papel' }),
+    ).rejects.toBeInstanceOf(TRPCError)
+    expect(findUnique).not.toHaveBeenCalled()
+  })
+})

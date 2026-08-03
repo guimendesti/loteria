@@ -611,6 +611,15 @@ export const adminUsersRouter = router({
    * referencial de bolões de terceiros (a regra explícita da tarefa). `Account`/`Session`
    * apagados aqui são exclusivamente deste usuário (FK `userId`) — não são linhas de
    * outros usuários.
+   *
+   * ★ Achado de auditoria (severidade média, corrigido): além de `User.pixKeyEncrypted`,
+   * também limpa o SNAPSHOT `Pool.ownerPixKeyEnc`/`ownerPixKeyType` gravado em cada bolão
+   * que este usuário organiza — sem isso, os demais membros continuariam vendo a chave
+   * mascarada e o app continuaria montando um BR Code Pix válido pagando alguém que acabou
+   * de ser removido (docs/03 §3.5). Mesmo ajuste espelhado em `account.deleteAccount`
+   * (`routers/account.ts`) para o caminho self-service. As quatro operações rodam na MESMA
+   * `$transaction` (antes, `user.update` corria solto e só `account`/`session` iam juntos
+   * num `Promise.all` — nenhuma atomicidade real entre elas).
    */
   anonymize: adminProcedure('ADMIN').input(anonymizeInput).mutation(async ({ ctx, input }) => {
     requirePermission(ctx, 'users:lgpd:anonymize')
@@ -644,26 +653,32 @@ export const adminUsersRouter = router({
     const anonymizedEmail = `anon-${user.id}@deleted.lotopro.invalid`
     const anonymizedName = 'Usuário removido'
 
-    const updated = await ctx.prisma.user.update({
-      where: { id: input.userId },
-      data: {
-        email: anonymizedEmail,
-        name: anonymizedName,
-        phone: null,
-        avatarUrl: null,
-        image: null,
-        passwordHash: null,
-        pixKeyEncrypted: null,
-        pixKeyType: null,
-        // Defesa em profundidade: uma identidade anonimizada não deveria reter
-        // privilégio de backoffice, mesmo que este ID um dia tenha tido um.
-        role: UserRole.CUSTOMER,
-        deletedAt: new Date(),
-      },
-      select: { id: true, email: true, deletedAt: true },
-    })
-
-    await Promise.all([
+    const [updated] = await ctx.prisma.$transaction([
+      ctx.prisma.user.update({
+        where: { id: input.userId },
+        data: {
+          email: anonymizedEmail,
+          name: anonymizedName,
+          phone: null,
+          avatarUrl: null,
+          image: null,
+          passwordHash: null,
+          pixKeyEncrypted: null,
+          pixKeyType: null,
+          // Defesa em profundidade: uma identidade anonimizada não deveria reter
+          // privilégio de backoffice, mesmo que este ID um dia tenha tido um.
+          role: UserRole.CUSTOMER,
+          deletedAt: new Date(),
+        },
+        select: { id: true, email: true, deletedAt: true },
+      }),
+      // ★ Achado de auditoria (severidade média, corrigido) — ver docblock acima: limpa o
+      // snapshot de chave Pix de cada bolão que este usuário organiza. `updateMany` sem
+      // match nenhum devolve `count: 0` sem erro.
+      ctx.prisma.pool.updateMany({
+        where: { ownerId: input.userId },
+        data: { ownerPixKeyEnc: null, ownerPixKeyType: null },
+      }),
       ctx.prisma.account.deleteMany({ where: { userId: input.userId } }),
       ctx.prisma.session.deleteMany({ where: { userId: input.userId } }),
     ])

@@ -36,6 +36,7 @@ import {
   computeShareMath,
   buildPixPayload,
 } from '@lotopro/core'
+import type { PayoutResult } from '@lotopro/core'
 import { MemberStatus, PaymentConfirmation, PayoutStatus, Prisma, PoolStatus } from '@lotopro/db'
 import { guardOrThrow, protectedProcedure, publicProcedure, router } from '@/server/trpc'
 import { decryptSecret } from '@/server/lib/crypto'
@@ -51,8 +52,10 @@ import {
   assertCanDeclarePayment,
   assertCanLeavePool,
   assertCanMarkPayoutPaid,
+  assertCanRemoveMember,
   assertValidPoolTransition,
 } from '@/server/lib/pool/state-machine'
+import { httpsUrlSchema } from '@/server/lib/pool/url'
 
 /**
  * Enfileira um evento de `pool-notify` sem nunca derrubar a mutation que acabou de
@@ -131,7 +134,9 @@ const updateStatusInput = z.object({ poolId: z.string().min(1), status: z.native
 
 const attachReceiptInput = z.object({
   poolId: z.string().min(1),
-  receiptUrl: z.string().trim().min(1, 'Informe a URL do comprovante.').max(2000),
+  // Achado J-3: exige URL absoluta https:// — o organizador anexa aqui o comprovante
+  // OFICIAL da aposta, renderizado como link para todos os membros do bolão.
+  receiptUrl: httpsUrlSchema('Informe a URL do comprovante.'),
 })
 
 type PoolRole = 'OWNER' | 'MEMBER'
@@ -331,17 +336,34 @@ export const poolRouter = router({
         pool.ownerPixKeyType && pool.ownerPixKeyEnc
           ? maskOwnerPixKey(pool.ownerPixKeyType, decryptSecret(pool.ownerPixKeyEnc))
           : null,
-      members: pool.members.map((member) => ({
-        id: member.id,
-        // Addendum v2 §5: `displayName` é `string` garantido, nunca `null`.
-        displayName: member.user?.name ?? member.guestName ?? 'Participante',
-        userId: member.userId,
-        shares: member.shares,
-        amountCents: member.amountCents,
-        status: member.status,
-        paymentDeclaredAt: member.payments[0]?.confirmedAt ?? null,
-        proofUrl: member.payments[0]?.proofUrl ?? null,
-      })),
+      members: pool.members.map((member) => {
+        // Achado J-4: `proofUrl` é o comprovante Pix enviado pelo participante — costuma
+        // trazer nome completo, CPF parcial, banco e agência. O contrato (PoolMemberRow)
+        // listava esse campo pra todo membro do array, mas isso deixa QUALQUER participante
+        // (mesmo com 1 cota) coletar o comprovante de TODOS os outros só lendo o JSON da
+        // resposta — a UI não desenha, mas o dado sai do servidor de qualquer forma. O
+        // contrato está errado aqui, não este código: só o dono (concilia todos os
+        // pagamentos) ou o próprio membro (vê o que ele mesmo enviou) recebem o valor real;
+        // qualquer outro membro recebe `null`.
+        //
+        // `amountCents`, ao contrário, é mantido visível pra todo mundo de propósito: é uma
+        // função determinística de `shares` (já visível neste mesmo array, pra todo membro)
+        // e `shareValueCents` (já visível no nível do Pool) — restringi-lo não esconderia
+        // informação nenhuma, só obrigaria quem já pode ver os dois fatores a fazer a conta
+        // na mão. Não há vazamento incremental a corrigir aqui.
+        const canSeeProof = isOwner || member.userId === userId
+        return {
+          id: member.id,
+          // Addendum v2 §5: `displayName` é `string` garantido, nunca `null`.
+          displayName: member.user?.name ?? member.guestName ?? 'Participante',
+          userId: member.userId,
+          shares: member.shares,
+          amountCents: member.amountCents,
+          status: member.status,
+          paymentDeclaredAt: member.payments[0]?.confirmedAt ?? null,
+          proofUrl: canSeeProof ? (member.payments[0]?.proofUrl ?? null) : null,
+        }
+      }),
       share,
       bets: pool.bets.map((bet) => ({ id: bet.id, contestNumber: bet.contestFrom, numbers: bet.numbers })),
     }
@@ -432,6 +454,23 @@ export const poolRouter = router({
         const ent = await ctx.getEntitlements()
 
         const memberId = await ctx.prisma.$transaction(async (tx) => {
+          // Achado J-1: sem travar a linha do Pool antes de recontar, duas transações
+          // concorrentes (2 chamadas de `addGuest`, ou uma `addGuest` correndo contra um
+          // `pool.join`) rodam em READ COMMITTED (padrão do Postgres) — cada uma tira um
+          // snapshot por statement e NENHUMA enxerga o INSERT não-commitado da outra. Ambas
+          // recontam "8/10 cotas", ambas passam, ambas inserem: o bolão vende cota a mais
+          // (viola a invariante 3 do contrato) e, pior, `computePayout` passa a lançar Error
+          // cru pra sempre nesse bolão (soma de cotas > totalShares).
+          //
+          // `SELECT ... FOR UPDATE` serializa por bolão: a segunda transação BLOQUEIA aqui
+          // até a primeira commitar (ou abortar); ao continuar, a recontagem seguinte já
+          // enxerga o INSERT commitado (novo snapshot de statement). Preferido a
+          // `isolationLevel: 'Serializable'` porque essa trava não exige tratar erro de
+          // serialização (Postgres 40001) nem implementar retry no chamador — o segundo
+          // `addGuest`/`join` só espera a vez e prossegue normalmente, sem exceção
+          // surpresa virando 500 pro cliente.
+          await tx.$queryRaw`SELECT id FROM "Pool" WHERE id = ${input.poolId} FOR UPDATE`
+
           const [sharesTaken, participantsCount] = await Promise.all([
             sumSharesTaken(tx, input.poolId),
             tx.poolMember.count({ where: { poolId: input.poolId, status: { not: MemberStatus.REMOVED } } }),
@@ -465,11 +504,14 @@ export const poolRouter = router({
         return { memberId }
       }),
 
-    /** `pool.members.remove` — dono. Libera as cotas do participante (some da recontagem). */
+    /** `pool.members.remove` — dono. Libera as cotas do participante (some da recontagem).
+     * Achado J-5: `pool.leave` (o próprio membro saindo) é travado por `assertCanLeavePool`;
+     * esta mutation, que é o ORGANIZADOR removendo outra pessoa, não tinha trava nenhuma —
+     * `assertCanRemoveMember` fecha isso (bloqueia `CONFIRMED` e bolão além de `CLOSED`). */
     remove: protectedProcedure.input(memberIdInput).mutation(async ({ ctx, input }) => {
       const member = await ctx.prisma.poolMember.findUnique({
         where: { id: input.memberId },
-        select: { status: true, pool: { select: { ownerId: true } } },
+        select: { status: true, pool: { select: { ownerId: true, status: true } } },
       })
       if (!member) throw new TRPCError({ code: 'NOT_FOUND', message: 'Participante não encontrado.' })
       if (member.pool.ownerId !== ctx.session.user.id) {
@@ -478,6 +520,8 @@ export const poolRouter = router({
       if (member.status === MemberStatus.REMOVED) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Este participante já foi removido.' })
       }
+
+      assertCanRemoveMember(member.status, member.pool.status)
 
       await ctx.prisma.poolMember.update({ where: { id: input.memberId }, data: { status: MemberStatus.REMOVED } })
       return { ok: true as const }
@@ -530,7 +574,15 @@ export const poolRouter = router({
   payments: router({
     /** `pool.payments.declare` — só o próprio participante (nunca o dono declarando por ele). */
     declare: protectedProcedure
-      .input(z.object({ memberId: z.string().min(1), proofUrl: z.string().trim().min(1).max(2000).optional() }))
+      .input(
+        z.object({
+          memberId: z.string().min(1),
+          // Achado J-3: mesma exigência de `attachReceiptInput` — URL absoluta https://.
+          // `proofUrl` é renderizado como link para o organizador em `pool.detail`; sem
+          // validação, um participante podia mandar phishing (ou `javascript:`/`data:`).
+          proofUrl: httpsUrlSchema('Informe a URL do comprovante.').optional(),
+        }),
+      )
       .mutation(async ({ ctx, input }) => {
         const member = await ctx.prisma.poolMember.findUnique({
           where: { id: input.memberId },
@@ -720,6 +772,11 @@ export const poolRouter = router({
       const ownerEnt = await resolveEntitlements(ctx.prisma, pool.ownerId)
 
       const memberId = await ctx.prisma.$transaction(async (tx) => {
+        // Achado J-1 — mesma trava e mesma justificativa de `members.addGuest` acima
+        // (serializa por bolão via lock de linha; ver comentário lá para o raciocínio
+        // completo, inclusive por que preferimos isto a `isolationLevel: 'Serializable'`).
+        await tx.$queryRaw`SELECT id FROM "Pool" WHERE id = ${pool.id} FOR UPDATE`
+
         const existing = await tx.poolMember.findUnique({ where: { poolId_userId: { poolId: pool.id, userId } } })
         if (existing && existing.status !== MemberStatus.REMOVED) {
           throw new TRPCError({ code: 'CONFLICT', message: 'Você já participa deste bolão.' })
@@ -812,26 +869,50 @@ export const poolRouter = router({
   // ───────────────────────────────────────────────────────────────────────────
 
   payout: router({
-    /** `pool.payout.compute` — dono. Upsert idempotente em `PoolPayout` (invariante 6). */
+    /**
+     * `pool.payout.compute` — dono. Upsert idempotente em `PoolPayout` (invariante 6).
+     *
+     * Achado J-2: `contestId` vem do cliente. Antes só se validava "existe na tabela
+     * Contest" — nunca contra `pool.lotteryId` nem contra a faixa `[contestFrom, contestTo]`
+     * do bolão. Como a unicidade é `[poolMemberId, contestId]`, QUALQUER contestId diferente
+     * (inclusive de outra modalidade, colhido nos procedures PÚBLICOS `contests.latest`/
+     * `byNumber`) cria linhas novas e dispara notificação real ("🎉 O bolão foi premiado!")
+     * pra cada membro — bombardeio de e-mail/push contra gente real, queimando a reputação
+     * do domínio de envio. Corrigido validando concurso ∈ (modalidade do bolão) ∩ (faixa
+     * jogada) e só notificando quando `grossPrizeCents > 0n` (prêmio de verdade).
+     *
+     * Achado J-6: seleciona só `status: CONFIRMED` — ver comentário mais abaixo.
+     */
     compute: protectedProcedure
       .input(z.object({ poolId: z.string().min(1), contestId: z.string().min(1) }))
       .mutation(async ({ ctx, input }) => {
         const pool = await ctx.prisma.pool.findUnique({
           where: { id: input.poolId },
-          select: { id: true, ownerId: true, totalShares: true },
+          select: { id: true, ownerId: true, totalShares: true, lotteryId: true, contestFrom: true, contestTo: true },
         })
         if (!pool) throw new TRPCError({ code: 'NOT_FOUND', message: 'Bolão não encontrado.' })
         if (pool.ownerId !== ctx.session.user.id) {
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Só o organizador do bolão pode calcular o rateio.' })
         }
 
-        const contest = await ctx.prisma.contest.findUnique({ where: { id: input.contestId }, select: { id: true } })
+        const contest = await ctx.prisma.contest.findUnique({
+          where: { id: input.contestId },
+          select: { id: true, lotteryId: true, number: true },
+        })
         if (!contest) throw new TRPCError({ code: 'NOT_FOUND', message: 'Concurso não encontrado.' })
+        if (contest.lotteryId !== pool.lotteryId || contest.number < pool.contestFrom || contest.number > pool.contestTo) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message:
+              'Este concurso não pertence à modalidade nem à faixa de concursos deste bolão — não é ' +
+              'possível calcular o rateio para ele.',
+          })
+        }
 
-        const [members, prizeAgg] = await Promise.all([
+        const [allMembers, prizeAgg] = await Promise.all([
           ctx.prisma.poolMember.findMany({
             where: { poolId: pool.id, status: { not: MemberStatus.REMOVED } },
-            select: { id: true, shares: true },
+            select: { id: true, shares: true, status: true },
           }),
           ctx.prisma.betCheck.aggregate({
             where: { contestId: input.contestId, bet: { poolId: pool.id } },
@@ -839,49 +920,107 @@ export const poolRouter = router({
           }),
         ])
 
+        // Achado J-6: o rateio calculado aqui é a fonte formal da verdade numa disputa
+        // entre organizador e participantes — só quem teve o Pix da COTA `CONFIRMED` pelo
+        // organizador tem direito real ao prêmio. `INVITED`/`JOINED`/`PAID` (declarado, mas
+        // NUNCA confirmado) não entram na conta: sem isto, alguém podia entrar com todas as
+        // cotas restantes, nunca pagar, sumir, e — se o bolão premiasse — o sistema
+        // registrava formalmente "direito a X%" e mandava "sua parte: R$ ..." pra essa
+        // pessoa. As cotas não confirmadas NÃO são redistribuídas silenciosamente pra quem
+        // confirmou (isso seria dar a mais pra uns às custas da conta de outrem) — caem no
+        // mesmo mecanismo de cota não vendida (`computePayout`: `totalShares` do bolão como
+        // denominador), e ficam EXPLÍCITAS no retorno (`unconfirmedShares`/
+        // `unconfirmedMemberIds`) pra UI avisar o organizador em vez de esconder.
+        const confirmedMembers = allMembers.filter((member) => member.status === MemberStatus.CONFIRMED)
+        const unconfirmedMembers = allMembers.filter((member) => member.status !== MemberStatus.CONFIRMED)
+
         const grossPrizeCents = prizeAgg._sum.prizeCents ?? 0n
-        const result = computePayout(
-          grossPrizeCents,
-          members.map((member) => ({ memberId: member.id, shares: member.shares })),
-          pool.totalShares,
-        )
+
+        let result: PayoutResult
+        try {
+          result = computePayout(
+            grossPrizeCents,
+            confirmedMembers.map((member) => ({ memberId: member.id, shares: member.shares })),
+            pool.totalShares,
+          )
+        } catch (error) {
+          // Achado J-1 (degradação): `computePayout` (`@lotopro/core`) lança `Error` cru
+          // quando a soma de cotas atribuídas passa do total do bolão. Isso nunca deveria
+          // acontecer com a trava de `pool.join`/`members.addGuest` em vigor (`SELECT ...
+          // FOR UPDATE`, ver comentários lá), mas dado legado gravado ANTES da correção pode
+          // seguir violando a invariante — sem este `try/catch`, essa violação tornava
+          // `payout.compute` um INTERNAL_SERVER_ERROR permanente naquele bolão. Nunca deixa
+          // isso virar 500 cru: converte pra um erro tratado, em português, orientando a
+          // não insistir sem investigar.
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message:
+              'Não foi possível calcular o rateio deste bolão: os registros de participantes estão ' +
+              'inconsistentes (a soma das cotas confirmadas ultrapassa o total do bolão). Contate o ' +
+              'suporte antes de tentar de novo — recalcular sem corrigir o dado só repete o erro.',
+            cause: error,
+          })
+        }
 
         if (result.shares.length > 0) {
           const existing = await ctx.prisma.poolPayout.findMany({
             where: { poolMemberId: { in: result.shares.map((share) => share.memberId) }, contestId: input.contestId },
-            select: { poolMemberId: true },
+            select: { poolMemberId: true, status: true },
           })
-          const existingIds = new Set(existing.map((row) => row.poolMemberId))
+          const existingStatusById = new Map(existing.map((row) => [row.poolMemberId, row.status]))
 
-          await ctx.prisma.$transaction(
-            result.shares.map((share) => {
-              const sharesRatio = sharesRatioDecimalString(share.shares, pool.totalShares)
-              // Recalcular NUNCA duplica nem infla: `update` preserva `status`/`paidAt` já
-              // existentes (não reseta um `markPaid` anterior); só `create` começa em PENDING.
-              if (existingIds.has(share.memberId)) {
-                return ctx.prisma.poolPayout.update({
-                  where: { poolMemberId_contestId: { poolMemberId: share.memberId, contestId: input.contestId } },
-                  data: { grossPrizeCents, sharesRatio, amountCents: share.amountCents },
-                })
-              }
-              return ctx.prisma.poolPayout.create({
-                data: {
-                  poolId: pool.id,
-                  poolMemberId: share.memberId,
-                  contestId: input.contestId,
-                  grossPrizeCents,
-                  sharesRatio,
-                  amountCents: share.amountCents,
-                  status: PayoutStatus.PENDING,
-                },
-              })
-            }),
-          )
+          // Achado menor: recalcular depois de `markPaid` não pode sobrescrever
+          // `amountCents`/`sharesRatio` de uma linha já `DECLARED_PAID`/`CONFIRMED` — senão o
+          // registro passa a dizer "pago R$ Y" quando o Pix real que já saiu foi R$ X. Só
+          // `PENDING` é atualizado; linhas além de `PENDING` são preservadas como estão
+          // (mesmo racional de `assertCanMarkPayoutPaid`: pago não regride).
+          const operations = result.shares.flatMap((share) => {
+            const sharesRatio = sharesRatioDecimalString(share.shares, pool.totalShares)
+            const existingStatus = existingStatusById.get(share.memberId)
 
-          await notifyPoolEventOrLog({ event: 'payout.computed', poolId: pool.id, contestId: input.contestId })
+            if (existingStatus === undefined) {
+              return [
+                ctx.prisma.poolPayout.create({
+                  data: {
+                    poolId: pool.id,
+                    poolMemberId: share.memberId,
+                    contestId: input.contestId,
+                    grossPrizeCents,
+                    sharesRatio,
+                    amountCents: share.amountCents,
+                    status: PayoutStatus.PENDING,
+                  },
+                }),
+              ]
+            }
+            if (existingStatus !== PayoutStatus.PENDING) {
+              return []
+            }
+            return [
+              ctx.prisma.poolPayout.update({
+                where: { poolMemberId_contestId: { poolMemberId: share.memberId, contestId: input.contestId } },
+                data: { grossPrizeCents, sharesRatio, amountCents: share.amountCents },
+              }),
+            ]
+          })
+
+          if (operations.length > 0) {
+            await ctx.prisma.$transaction(operations)
+          }
+
+          // Achado J-2: só notifica "bolão premiado" quando existe prêmio de verdade — nunca
+          // por um recompute de concurso sem prêmio (`grossPrizeCents === 0n`), mesmo dentro
+          // da faixa/modalidade válida do bolão (ex.: dono conferindo semana a semana).
+          if (grossPrizeCents > 0n) {
+            await notifyPoolEventOrLog({ event: 'payout.computed', poolId: pool.id, contestId: input.contestId })
+          }
         }
 
-        return result
+        return {
+          ...result,
+          unconfirmedShares: unconfirmedMembers.reduce((sum, member) => sum + member.shares, 0),
+          unconfirmedMemberIds: unconfirmedMembers.map((member) => member.id),
+        }
       }),
 
     /** `pool.payout.list` — dono ou membro. Roster completo (todo mundo vê o rateio de todo mundo). */

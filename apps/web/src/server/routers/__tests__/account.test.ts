@@ -331,6 +331,7 @@ describe('account.deleteAccount — anonimiza sem deletar linhas (LGPD)', () => 
     const findUniqueOrThrow = vi.fn().mockResolvedValue({ deletedAt: null })
     const userUpdate = vi.fn().mockReturnValue('USER_UPDATE_OP')
     const prefUpdateMany = vi.fn().mockReturnValue('PREF_UPDATE_OP')
+    const poolUpdateMany = vi.fn().mockReturnValue('POOL_UPDATE_OP')
     const accountDeleteMany = vi.fn().mockReturnValue('ACCOUNT_DELETE_OP')
     const sessionDeleteMany = vi.fn().mockReturnValue('SESSION_DELETE_OP')
     const transaction = vi.fn(async (ops: unknown[]) => ops)
@@ -339,6 +340,7 @@ describe('account.deleteAccount — anonimiza sem deletar linhas (LGPD)', () => 
       buildContext({
         user: { findUniqueOrThrow, update: userUpdate },
         notificationPreference: { updateMany: prefUpdateMany },
+        pool: { updateMany: poolUpdateMany },
         account: { deleteMany: accountDeleteMany },
         session: { deleteMany: sessionDeleteMany },
         $transaction: transaction,
@@ -368,19 +370,26 @@ describe('account.deleteAccount — anonimiza sem deletar linhas (LGPD)', () => 
       where: { userId: SESSION_USER_ID },
       data: { marketingOptIn: false },
     })
+    // Snapshot de chave Pix nos bolões que o usuário organiza também é limpo — ver teste
+    // dedicado de regressão abaixo para o motivo detalhado.
+    expect(poolUpdateMany).toHaveBeenCalledWith({
+      where: { ownerId: SESSION_USER_ID },
+      data: { ownerPixKeyEnc: null, ownerPixKeyType: null },
+    })
 
     // "encerra sessões" (CL-109): credencial/OAuth (Account) e sessões ativas (Session)
-    // são apagadas — nenhuma chamada a Bet/BetCheck/Pool/PoolMember/Invoice acontece
-    // (o fake de Prisma nem define esses métodos: se o código tentasse tocar neles, a
-    // chamada quebraria e este teste falharia).
+    // são apagadas — nenhuma chamada a Bet/BetCheck/PoolMember/Invoice acontece (o fake de
+    // Prisma nem define esses métodos: se o código tentasse tocar neles, a chamada
+    // quebraria e este teste falharia).
     expect(accountDeleteMany).toHaveBeenCalledWith({ where: { userId: SESSION_USER_ID } })
     expect(sessionDeleteMany).toHaveBeenCalledWith({ where: { userId: SESSION_USER_ID } })
 
-    // As 4 operações são atômicas: uma única chamada a `$transaction` com as 4 juntas.
+    // As 5 operações são atômicas: uma única chamada a `$transaction` com as 5 juntas.
     expect(transaction).toHaveBeenCalledTimes(1)
     expect(transaction.mock.calls[0]?.[0]).toEqual([
       'USER_UPDATE_OP',
       'PREF_UPDATE_OP',
+      'POOL_UPDATE_OP',
       'ACCOUNT_DELETE_OP',
       'SESSION_DELETE_OP',
     ])
@@ -394,6 +403,52 @@ describe('account.deleteAccount — anonimiza sem deletar linhas (LGPD)', () => 
    * `User`). Este teste prova que uma auto-exclusão SEMPRE rebaixa para CUSTOMER e limpa o
    * `passwordHash` legado, não importa o papel de quem chamou.
    */
+  /**
+   * ★ Regressão de segurança/LGPD (achado de auditoria, severidade média): antes desta
+   * correção, `deleteAccount` só zerava `User.pixKeyEncrypted`/`pixKeyType`, mas nunca o
+   * SNAPSHOT `Pool.ownerPixKeyEnc`/`ownerPixKeyType` gravado em cada bolão que o usuário
+   * organiza. Consequência: depois da "exclusão", o app continuava montando um BR Code Pix
+   * válido pagando a chave do titular que acabou de exercer o direito de exclusão, em nome
+   * de um "Usuário removido" — dinheiro indo para quem já saiu da plataforma. Este teste
+   * prova que o snapshot é limpo, na MESMA transação das demais operações.
+   */
+  it('★ REGRESSÃO LGPD: limpa o snapshot Pool.ownerPixKeyEnc/ownerPixKeyType dos bolões que o usuário organiza, na mesma transação', async () => {
+    const findUniqueOrThrow = vi.fn().mockResolvedValue({ deletedAt: null })
+    const userUpdate = vi.fn().mockReturnValue('USER_UPDATE_OP')
+    const prefUpdateMany = vi.fn().mockReturnValue('PREF_UPDATE_OP')
+    const poolUpdateMany = vi.fn().mockReturnValue('POOL_UPDATE_OP')
+    const accountDeleteMany = vi.fn().mockReturnValue('ACCOUNT_DELETE_OP')
+    const sessionDeleteMany = vi.fn().mockReturnValue('SESSION_DELETE_OP')
+    const transaction = vi.fn(async (ops: unknown[]) => ops)
+
+    const caller = createCaller(
+      buildContext({
+        user: { findUniqueOrThrow, update: userUpdate },
+        notificationPreference: { updateMany: prefUpdateMany },
+        pool: { updateMany: poolUpdateMany },
+        account: { deleteMany: accountDeleteMany },
+        session: { deleteMany: sessionDeleteMany },
+        $transaction: transaction,
+      }),
+    )
+
+    await caller.deleteAccount({ confirmation: DELETE_ACCOUNT_CONFIRMATION_PHRASE })
+
+    expect(poolUpdateMany).toHaveBeenCalledWith({
+      where: { ownerId: SESSION_USER_ID },
+      data: { ownerPixKeyEnc: null, ownerPixKeyType: null },
+    })
+    // Continua sendo UMA única transação atômica — agora com 5 operações, não 4.
+    expect(transaction).toHaveBeenCalledTimes(1)
+    expect(transaction.mock.calls[0]?.[0]).toEqual([
+      'USER_UPDATE_OP',
+      'PREF_UPDATE_OP',
+      'POOL_UPDATE_OP',
+      'ACCOUNT_DELETE_OP',
+      'SESSION_DELETE_OP',
+    ])
+  })
+
   it('rebaixa role para CUSTOMER e limpa passwordHash mesmo quando quem exclui é ADMIN (defesa em profundidade)', async () => {
     const findUniqueOrThrow = vi.fn().mockResolvedValue({ deletedAt: null })
     const userUpdate = vi.fn().mockReturnValue('USER_UPDATE_OP')
@@ -402,6 +457,7 @@ describe('account.deleteAccount — anonimiza sem deletar linhas (LGPD)', () => 
     const ctx = buildContext({
       user: { findUniqueOrThrow, update: userUpdate },
       notificationPreference: { updateMany: vi.fn() },
+      pool: { updateMany: vi.fn() },
       account: { deleteMany: vi.fn() },
       session: { deleteMany: vi.fn() },
       $transaction: transaction,

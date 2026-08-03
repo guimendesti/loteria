@@ -536,6 +536,17 @@ export const DELETE_ACCOUNT_CONFIRMATION_PHRASE = 'EXCLUIR MINHA CONTA'
  * de rede externa dentro de `$transaction` é anti-padrão, e `billing.cancel` já existe
  * pronto para isso — a tela (`conta/privacidade/page.tsx`) chama `trpc.billing.cancel`
  * antes de `deleteAccount` quando há assinatura paga ativa. Ver relatório.
+ *
+ * ── Snapshot de chave Pix em `Pool.ownerPixKeyEnc`/`ownerPixKeyType` — achado de auditoria
+ * (severidade média) ──────────────────────────────────────────────────────────────────
+ * Quando um bolão é criado, a chave Pix do organizador é copiada para `Pool.ownerPixKeyEnc`/
+ * `ownerPixKeyType` (snapshot — o rateio precisa continuar funcionando mesmo que o dono
+ * troque a chave depois). Sem limpar esse snapshot aqui, a exclusão de conta era
+ * INCOMPLETA: `User.pixKeyEncrypted` zerava, mas os bolões que este usuário organiza
+ * continuavam com a chave cifrada intacta em `Pool` — o app seguiria montando um BR Code
+ * Pix válido para os demais membros, pagando o titular que acabou de exercer o direito de
+ * exclusão (docs/03 §3.5). Mesmo padrão de `admin.users.anonymize`
+ * (`routers/admin/users.ts`) — nunca reimplementado, só espelhado aqui.
  */
 const deleteAccountProcedure = protectedProcedure
   .input(z.object({ confirmation: z.string() }))
@@ -583,6 +594,14 @@ const deleteAccountProcedure = protectedProcedure
       ctx.prisma.notificationPreference.updateMany({
         where: { userId },
         data: { marketingOptIn: false },
+      }),
+      // ★ Achado de auditoria (severidade média, corrigido): limpa o snapshot de chave Pix
+      // gravado em CADA bolão que este usuário organiza — sem isso a exclusão de conta é
+      // incompleta (ver docblock acima). `updateMany` sem match nenhum (usuário nunca
+      // organizou bolão) devolve `count: 0` sem erro.
+      ctx.prisma.pool.updateMany({
+        where: { ownerId: userId },
+        data: { ownerPixKeyEnc: null, ownerPixKeyType: null },
       }),
       ctx.prisma.account.deleteMany({ where: { userId } }),
       ctx.prisma.session.deleteMany({ where: { userId } }),

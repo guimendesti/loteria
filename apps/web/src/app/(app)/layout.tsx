@@ -20,6 +20,18 @@ export default async function AppLayout({
     redirect('/login')
   }
 
+  // ★ Achado de auditoria (severidade baixa, UX — corrigido): espelha a mesma
+  // primeira-linha-de-defesa que `app/(admin)/layout.tsx` já tinha. Sem este check, um
+  // usuário bloqueado renderizava a casca inteira do painel (Sidebar, layout) e só
+  // descobria o bloqueio quando a primeira query tRPC batia em erro — não é uma falha de
+  // segurança (`protectedProcedure` em `server/trpc.ts` já recusa toda procedure para uma
+  // sessão bloqueada, e `databaseHooks.session.create.before` em `lib/auth.ts` já recusa
+  // login novo), só uma experiência ruim. `session.user.blockedAt` vem de graça
+  // (additionalField do Better Auth), sem query extra.
+  if (session.user.blockedAt) {
+    redirect('/login')
+  }
+
   return (
     <TRPCReactProvider>
       <div className="flex min-h-screen">

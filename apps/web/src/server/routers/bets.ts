@@ -30,7 +30,7 @@ import { applyHistoryCutoff } from '@/server/lib/entitlements'
 import { columnsSchema, extraPicksSchema, lotterySlugSchema, numbersSchema } from '@/server/lib/lottery-schema'
 import { assertValidContestRange, buildBetInput, calculateBetCostCents } from '@/server/lib/bet-cost'
 import { parseColumns, parseExtraPicks, parseTierCounts } from '@/server/lib/bet-json'
-import { assertBetMatchesPool, loadEditablePoolOwnedBy } from '@/server/lib/bet-pool'
+import { assertBetMatchesPool, assertPoolGamesEditable, loadEditablePoolOwnedBy, loadPoolForLink } from '@/server/lib/bet-pool'
 
 /**
  * Gates de docs/05 §5.4 aplicados nesta onda: **G1** (`create`/`duplicate`,
@@ -346,6 +346,15 @@ export const betsRouter = router({
    * se `checks.length === 0` (aproximação combinada de "nenhum check existe" com
    * "contestFrom ainda não sorteado" — o worker de conferência que popularia
    * `BetCheck` ainda não existe nesta onda).
+   *
+   * ★ Achado de auditoria (severidade alta, corrigido): quando o jogo pertence a um bolão
+   * (`Bet.poolId`), trocar dezenas/extra/colunas por aqui furava o congelamento de
+   * `server/lib/bet-pool.ts#assertPoolGamesEditable` — esse trava só era checada em
+   * `assignPool`/`create`, nunca em `update`. Um organizador podia, depois do bolão em
+   * `BET_PLACED` (comprovante já anexado, participantes já confirmaram o Pix da cota),
+   * reescrever as dezenas do jogo vinculado — a conferência rodaria sobre um jogo que
+   * ninguém aprovou. Mesma trava aplicada aqui: se `existing.poolId` não é nulo, o bolão
+   * precisa estar em DRAFT/OPEN/CLOSED para as dezenas/extra/colunas poderem mudar.
    */
   update: protectedProcedure.input(updateInput).mutation(async ({ ctx, input }) => {
     const existing = await ctx.prisma.bet.findUnique({
@@ -366,6 +375,11 @@ export const betsRouter = router({
           code: 'BAD_REQUEST',
           message: 'Este jogo já foi conferido em ao menos um concurso; as dezenas não podem mais ser editadas.',
         })
+      }
+
+      if (existing.poolId !== null) {
+        const pool = await loadPoolForLink(ctx.prisma, existing.poolId)
+        assertPoolGamesEditable(pool)
       }
 
       const config = findLotteryConfig(existing.lottery.slug)
