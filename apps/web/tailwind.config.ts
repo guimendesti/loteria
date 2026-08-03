@@ -1,5 +1,8 @@
 import type { Config } from 'tailwindcss'
-import { colors, lotteryColors, radii, spacing, typography } from '@lotopro/ui'
+// ⚠️ Import do MÓDULO DE TOKENS, não do índice do pacote: o índice reexporta
+// componentes .tsx, e o jiti (que carrega este config) não resolve JSX — quebra
+// o `next build`. Tokens são TS puro. Ver ORQUESTRACAO.md (deploy S4).
+import { colors, lotteryColors, radii, spacing, typography } from '@lotopro/ui/src/tokens'
 
 /**
  * Tema Tailwind gerado a partir da fonte única de verdade dos tokens
