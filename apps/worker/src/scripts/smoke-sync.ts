@@ -4,7 +4,11 @@
  * Uso:  DATABASE_URL=... pnpm -F @lotopro/worker exec tsx src/scripts/smoke-sync.ts
  */
 import { prisma } from '@lotopro/db'
-import { CaixaOfficialProvider } from '@lotopro/integrations'
+import {
+  CaixaOfficialProvider,
+  CaixaMirrorProvider,
+  ResilientResultProvider,
+} from '@lotopro/integrations'
 import { createSyncResultsJob } from '../jobs/sync-results'
 import { createSyncResultsPrismaAdapter } from '../lib/prisma-adapters'
 
@@ -12,7 +16,14 @@ async function main() {
   const enqueued: unknown[] = []
   const run = createSyncResultsJob({
     prisma: createSyncResultsPrismaAdapter(prisma),
-    provider: new CaixaOfficialProvider(),
+    // Mesma cadeia do bootstrap (index.ts): oficial primeiro, espelho como
+    // fallback. Sem isso o smoke não reproduz o comportamento de produção — foi
+    // o que mascarou o 403 da API oficial no primeiro deploy.
+    provider: new ResilientResultProvider(new CaixaOfficialProvider(), [new CaixaMirrorProvider()], {
+      logger: (event) => {
+        if (event.type === 'provider_failed') console.warn('  fallback:', event.provider, 'falhou')
+      },
+    }),
     checkBetsQueue: {
       add: async (_name: string, payload: unknown) => {
         enqueued.push(payload)
