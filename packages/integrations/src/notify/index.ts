@@ -43,3 +43,14 @@ export {
 } from './resend'
 
 export { NoopPushSender, PUSH_NOT_CONFIGURED_ERROR } from './noop'
+
+export {
+  WebPushSender,
+  DEFAULT_PUSH_TIMEOUT_MS,
+  type WebPushSenderOptions,
+  type WebPushImplLike,
+  type WebPushSubscriptionLike,
+  type WebPushVapidDetailsLike,
+  type WebPushRequestOptionsLike,
+  type WebPushSendResultLike,
+} from './webpush'

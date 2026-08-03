@@ -1,0 +1,12 @@
+{
+  "errors": [
+    {
+      "code": "invalid_value",
+      "description": "O valor da assinatura deve ser maior ou igual a R$ 5,00."
+    },
+    {
+      "code": "invalid_nextDueDate",
+      "description": "A data da próxima cobrança não pode ser anterior a hoje."
+    }
+  ]
+}

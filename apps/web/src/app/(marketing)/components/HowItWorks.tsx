@@ -1,8 +1,20 @@
 /** Seção 3 — Como funciona, 3 passos (docs/08 §A.3.3). */
 const STEPS = [
-  { n: 1, title: 'Cadastre seus jogos' },
-  { n: 2, title: 'Aposte na Caixa' },
-  { n: 3, title: 'Receba o resultado no celular' },
+  {
+    n: 1,
+    title: 'Cadastre seus jogos',
+    detail: 'Digite as dezenas ou fotografe o comprovante — leva menos de 1 minuto.',
+  },
+  {
+    n: 2,
+    title: 'Aposte na Caixa',
+    detail: 'A aposta em si sempre acontece nos canais oficiais da CAIXA, como sempre.',
+  },
+  {
+    n: 3,
+    title: 'Receba o resultado no celular',
+    detail: 'O LotoPro confere sozinho depois de cada sorteio e te avisa se você ganhou.',
+  },
 ]
 
 export function HowItWorks() {
@@ -19,6 +31,7 @@ export function HowItWorks() {
                 {step.n}
               </span>
               <p className="mt-4 font-semibold text-ink-900">{step.title}</p>
+              <p className="mt-1 text-sm text-ink-600">{step.detail}</p>
             </li>
           ))}
         </ol>

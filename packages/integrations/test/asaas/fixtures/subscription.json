@@ -1,0 +1,22 @@
+{
+  "object": "subscription",
+  "id": "sub_kd0eh0dgg4b0hlhx",
+  "dateCreated": "2026-08-02",
+  "customer": "cus_000006254476",
+  "paymentLink": null,
+  "billingType": "PIX",
+  "cycle": "MONTHLY",
+  "value": 24.9,
+  "nextDueDate": "2026-09-02",
+  "endDate": null,
+  "description": "LotoPro Premium — mensal",
+  "status": "ACTIVE",
+  "discount": null,
+  "fine": null,
+  "interest": null,
+  "split": null,
+  "deleted": false,
+  "maxPayments": null,
+  "externalReference": "sub_ckz1a2b3c4d5",
+  "checkoutSession": null
+}

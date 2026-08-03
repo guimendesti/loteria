@@ -54,6 +54,10 @@ export default function JogosPage() {
 
   const items: BetListItem[] = useMemo(() => query.data?.pages.flatMap((page) => page.items) ?? [], [query.data])
 
+  // G7 (docs/05 §5.4) — mesma flag em toda página (deriva só do plano do
+  // usuário, não do conteúdo); basta olhar a primeira página carregada.
+  const historyLimited = query.data?.pages[0]?.historyLimited ?? false
+
   const groups: Group[] = useMemo(() => {
     const map = new Map<string, Group>()
     for (const bet of items) {
@@ -188,6 +192,16 @@ export default function JogosPage() {
             {query.isFetchingNextPage ? 'Carregando…' : 'Carregar mais'}
           </button>
         </div>
+      ) : null}
+
+      {/* G7 (docs/05 §5.4) — nunca deleta, só oculta: banner discreto no fim da lista, não um bloqueio. */}
+      {!isEmpty && historyLimited ? (
+        <p className="mt-6 text-center text-sm text-ink-400">
+          Jogos com mais de 90 dias ficam ocultos no plano gratuito.{' '}
+          <a href="/app/conta/assinatura" className="font-medium text-brand-500 hover:text-brand-700">
+            Assinar Premium
+          </a>
+        </p>
       ) : null}
     </div>
   )

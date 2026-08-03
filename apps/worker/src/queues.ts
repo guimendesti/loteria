@@ -41,6 +41,7 @@ export const QUEUE_NAMES = {
   CHECK_BETS: 'check-bets',
   NOTIFY: 'notify',
   ACCUMULATED_ALERT: 'accumulated-alert',
+  BILLING_DUNNING: 'billing-dunning',
 } as const
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES]
@@ -110,11 +111,17 @@ export function createRedisConnection(config: Pick<WorkerConfig, 'REDIS_URL'>): 
 
 // ─── Filas ────────────────────────────────────────────────────────────────────
 
+/** SY-09 — payload do job diário de dunning (ver jobs/billing-dunning.ts). */
+export interface BillingDunningJobData {
+  triggeredAt: string
+}
+
 export interface Queues {
   syncResults: Queue<SyncResultsJobData>
   checkBets: Queue<CheckBetsJobData>
   notify: Queue<NotifyJobData>
   accumulatedAlert: Queue<AccumulatedAlertJobData>
+  billingDunning: Queue<BillingDunningJobData>
 }
 
 export function createQueues(connection: Redis): Queues {
@@ -123,6 +130,7 @@ export function createQueues(connection: Redis): Queues {
     checkBets: new Queue<CheckBetsJobData>(QUEUE_NAMES.CHECK_BETS, { connection }),
     notify: new Queue<NotifyJobData>(QUEUE_NAMES.NOTIFY, { connection }),
     accumulatedAlert: new Queue<AccumulatedAlertJobData>(QUEUE_NAMES.ACCUMULATED_ALERT, { connection }),
+    billingDunning: new Queue<BillingDunningJobData>(QUEUE_NAMES.BILLING_DUNNING, { connection }),
   }
 }
 

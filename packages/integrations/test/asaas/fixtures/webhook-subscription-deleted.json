@@ -1,0 +1,20 @@
+{
+  "id": "evt_9c1bd4408a2f77e0d3f1aa5511223344&368605100",
+  "event": "SUBSCRIPTION_DELETED",
+  "dateCreated": "2026-10-01 09:00:00",
+  "subscription": {
+    "object": "subscription",
+    "id": "sub_kd0eh0dgg4b0hlhx",
+    "dateCreated": "2026-08-02",
+    "customer": "cus_000006254476",
+    "billingType": "PIX",
+    "cycle": "MONTHLY",
+    "value": 24.9,
+    "nextDueDate": null,
+    "endDate": null,
+    "description": "LotoPro Premium — mensal",
+    "status": "ACTIVE",
+    "deleted": true,
+    "externalReference": "sub_ckz1a2b3c4d5"
+  }
+}

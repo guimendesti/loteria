@@ -54,6 +54,14 @@ const envSchema = z.object({
         'EMAIL_FROM é obrigatório (remetente das notificações por e-mail, ex.: "LotoPro <notificacoes@lotopro.com.br>")',
     })
     .min(1, 'EMAIL_FROM não pode ser vazio'),
+  // SY-09 — dunning consulta o Asaas. OPCIONAL: sem a chave, o job de dunning não é
+  // registrado (bootstrap loga aviso) — permite rodar o worker em dev sem conta Asaas.
+  ASAAS_API_KEY: z.string().min(1).optional(),
+  // SY-04 — Web Push (VAPID). OPCIONAIS como grupo: com os três presentes usa
+  // WebPushSender real; faltando qualquer um, cai no NoopPushSender (aviso no boot).
+  VAPID_PUBLIC_KEY: z.string().min(1).optional(),
+  VAPID_PRIVATE_KEY: z.string().min(1).optional(),
+  VAPID_SUBJECT: z.string().min(1).optional(),
 })
 
 export type WorkerConfig = z.infer<typeof envSchema>

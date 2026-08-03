@@ -20,6 +20,8 @@ import { useResponsiveColumns } from '../../components/use-responsive-columns'
 import { setToast } from '../../components/toast'
 import { ColumnsPicker } from '../../components/ColumnsPicker'
 import { MONTH_NAMES } from '../../components/labels'
+import { PaywallDialog } from '../../components/PaywallDialog'
+import { readPaywallError, usePaywall } from '../../components/use-paywall'
 
 /** Apenas modalidades apostáveis pelo motor (Federal não tem tabela de preço). */
 const BETTABLE_LOTTERIES = ALL_LOTTERIES.filter((lottery) => lottery.priceTiers.length > 0)
@@ -97,6 +99,16 @@ export default function NovoJogoPage() {
     },
   })
 
+  // G1 (docs/05 §5.4) — se o servidor recusar com FORBIDDEN + paywall (teto de
+  // jogos ativos do plano), abre o PaywallDialog SEM tocar no estado do
+  // formulário: o usuário não perde as dezenas/concurso já preenchidos.
+  const paywall = usePaywall(createMutation.error)
+
+  // Aviso preventivo G1 ("avisar ANTES de perder trabalho", docs/05 §5.4):
+  // `bets.summary` já calcula isso a partir do plano real do usuário
+  // (`remaining(canCreateBet(...)) === 1`) — nunca chutar o limite no cliente.
+  const summaryQuery = trpc.bets.summary.useQuery()
+
   function selectLottery(slug: LotterySlug) {
     setLotterySlug(slug)
     setNumbers([])
@@ -149,6 +161,7 @@ export default function NovoJogoPage() {
   }
 
   const serverErrors: ValidationError[] | null | undefined = createMutation.error?.data?.betValidationErrors
+  const isPaywallError = readPaywallError(createMutation.error) !== null
   const inlineErrors = (validation && !validation.ok ? validation.errors : []).filter(
     (error) => error.code !== 'TOO_FEW_PICKS',
   )
@@ -359,11 +372,24 @@ export default function NovoJogoPage() {
             <li key={error.code}>{error.message}</li>
           ))}
         </ul>
-      ) : createMutation.isError ? (
+      ) : createMutation.isError && !isPaywallError ? (
         <p className="mt-4 rounded-md bg-danger/10 p-3 text-sm text-danger">
           Não foi possível salvar o jogo. Tente novamente.
         </p>
       ) : null}
+
+      {/* Aviso preventivo G1 (docs/05 §5.4) — avisa ANTES de bloquear, não só quando o servidor recusa. */}
+      {summaryQuery.data?.lastFreeBetWarning ? (
+        <p className="mt-4 rounded-md bg-warning/10 p-3 text-sm text-warning">
+          Este é seu último jogo no plano gratuito.{' '}
+          <a href="/app/conta/assinatura" className="font-semibold underline">
+            Conheça o Premium
+          </a>{' '}
+          para cadastrar jogos ilimitados.
+        </p>
+      ) : null}
+
+      <PaywallDialog open={paywall.open} paywall={paywall.paywall} onClose={paywall.close} />
 
       <div className="mt-6 hidden items-center justify-between rounded-lg border border-ink-200 bg-white p-4 md:flex">
         <div>

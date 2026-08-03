@@ -1,0 +1,32 @@
+{
+  "object": "list",
+  "hasMore": false,
+  "totalCount": 3,
+  "limit": 100,
+  "offset": 2,
+  "data": [
+    {
+      "object": "payment",
+      "id": "pay_5500110022003302",
+      "dateCreated": "2026-05-02",
+      "customer": "cus_000006254476",
+      "subscription": "sub_kd0eh0dgg4b0hlhx",
+      "dueDate": "2026-05-02",
+      "originalDueDate": "2026-05-02",
+      "value": 249,
+      "netValue": 248.45,
+      "description": "LotoPro Premium — anual",
+      "externalReference": "inv_ckz0000anual",
+      "billingType": "BOLETO",
+      "status": "RECEIVED",
+      "confirmedDate": "2026-05-03",
+      "paymentDate": "2026-05-03",
+      "clientPaymentDate": "2026-05-02",
+      "invoiceUrl": "https://sandbox.asaas.com/i/5500110022003302",
+      "invoiceNumber": "08312778",
+      "bankSlipUrl": "https://sandbox.asaas.com/b/pdf/5500110022003302",
+      "deleted": false,
+      "postalService": false
+    }
+  ]
+}

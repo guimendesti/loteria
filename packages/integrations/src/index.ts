@@ -88,4 +88,33 @@ export {
   type ResendFetchLike,
   type ResendFetchInitLike,
   type ResendFetchResponseLike,
+  WebPushSender,
 } from './notify'
+
+// ⚠️ Asaas exporta `AsaasFetchLike` (POST/PUT/DELETE), distinto do `FetchLike`
+// da Caixa (só GET) — NÃO reexportar o alias `FetchLike` do asaas aqui.
+export {
+  AsaasClient,
+  AsaasApiError,
+  AsaasNetworkError,
+  AsaasTimeoutError,
+  AsaasWebhookError,
+  parseAsaasWebhook,
+  isValidWebhookToken,
+  isHandledAsaasEvent,
+  centsToReais,
+  reaisToCents,
+  MAX_SAFE_CENTS,
+  ASAAS_SANDBOX_BASE_URL,
+  ASAAS_PRODUCTION_BASE_URL,
+  ASAAS_HANDLED_EVENTS,
+  DEFAULT_ASAAS_TIMEOUT_MS,
+  ASAAS_GET_RETRY_DELAYS_MS,
+  type AsaasConfig,
+  type AsaasSubscription,
+  type AsaasPayment,
+  type AsaasWebhookEvent,
+  type AsaasBillingType,
+  type AsaasCycle,
+  type AsaasFetchLike,
+} from './asaas'

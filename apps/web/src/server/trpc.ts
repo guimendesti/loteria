@@ -2,22 +2,43 @@
  * tRPC v11 — inicialização, contexto e procedures base.
  *
  * Contexto carrega a sessão do Better Auth (a partir dos headers da request
- * fetch) e o client Prisma de @lotopro/db. `protectedProcedure` é o único
- * lugar que decide "tem sessão ou não" — entitlements de plano (docs/06 §6.9)
- * entram depois, em cima disso, quando os routers de domínio existirem.
+ * fetch), o client Prisma de @lotopro/db e `getEntitlements()` — leitor lazy
+ * dos entitlements de plano do usuário (docs/06 §6.9). `protectedProcedure` é
+ * o único lugar que decide "tem sessão ou não"; os guards de plano (G1..G10,
+ * docs/05 §5.4) são responsabilidade de cada router (ver `guardOrThrow` abaixo
+ * e `server/routers/bets.ts`).
  */
 import { initTRPC, TRPCError } from '@trpc/server'
 import superjson from 'superjson'
 import { prisma } from '@lotopro/db'
+import { getEntitlements as getStaticEntitlements, type Entitlements, type GuardResult } from '@lotopro/core'
 import { auth } from '@/lib/auth'
-import { BetValidationError } from '@/server/errors'
+import { BetValidationError, PaywallError } from '@/server/errors'
+import { resolveEntitlements } from '@/server/lib/entitlements'
 
 export async function createTRPCContext({ req }: { req: Request }) {
   const session = await auth.api.getSession({ headers: req.headers })
 
+  // Memoizado por FECHAMENTO — vive só durante esta requisição (uma
+  // `createTRPCContext` por chamada HTTP). Nunca cacheado entre requisições:
+  // isso vazaria o plano de um usuário para outro numa instância compartilhada
+  // do processo Node. Chamadas repetidas a `getEntitlements()` dentro do mesmo
+  // request (ex.: `bets.create` conferindo o guard e depois lendo o limite de
+  // novo) reaproveitam a mesma Promise em vez de bater no banco de novo.
+  let entitlementsPromise: Promise<Entitlements> | null = null
+  function getEntitlements(): Promise<Entitlements> {
+    // Sem sessão: procedures públicas que eventualmente chamem isso (não há
+    // nenhuma hoje) recebem os limites do Free em vez de estourar — quem
+    // exige sessão de verdade é `protectedProcedure`, abaixo.
+    if (!session) return Promise.resolve(getStaticEntitlements('free'))
+    entitlementsPromise ??= resolveEntitlements(prisma, session.user.id)
+    return entitlementsPromise
+  }
+
   return {
     prisma,
     session,
+    getEntitlements,
   }
 }
 
@@ -26,10 +47,14 @@ export type Context = Awaited<ReturnType<typeof createTRPCContext>>
 const t = initTRPC.context<Context>().create({
   transformer: superjson,
   /**
-   * Expõe `ValidationError[]` do core (@lotopro/core `validateBet`) em
-   * `shape.data.betValidationErrors` quando o erro carrega um `BetValidationError`
-   * como `cause` — o cliente usa os `code`s para destacar campos do seletor de
-   * dezenas (docs/08 CL-12), além da mensagem humana já em `shape.message`.
+   * Expõe dois canais de erro estruturado em `shape.data`, cada um lido do
+   * `cause` do `TRPCError` (mesmo padrão para os dois — nunca inferir pelo
+   * `code` HTTP sozinho, que é compartilhado por outros erros BAD_REQUEST/FORBIDDEN):
+   * - `betValidationErrors`: `ValidationError[]` do core (`validateBet`) — o
+   *   cliente destaca campos do seletor de dezenas (docs/08 CL-12).
+   * - `paywall`: `{ gate, limit, current }` de um `GuardResult` negativo
+   *   (`guardOrThrow` abaixo) — o cliente abre o `PaywallDialog` (docs/09 C6)
+   *   com o gate certo (G1..G10, docs/05 §5.4).
    */
   errorFormatter({ shape, error }) {
     return {
@@ -38,6 +63,7 @@ const t = initTRPC.context<Context>().create({
         ...shape.data,
         betValidationErrors:
           error.cause instanceof BetValidationError ? error.cause.errors : null,
+        paywall: error.cause instanceof PaywallError ? toPaywallData(error.cause.result) : null,
       },
     }
   },
@@ -60,3 +86,33 @@ export const protectedProcedure = t.procedure.use(function isAuthed(opts) {
     },
   })
 })
+
+// ─── Guards de entitlements (docs/05 §5.4) ──────────────────────────────────
+
+/**
+ * `result.limit`/`result.current` só existem no `GuardResult` quando são
+ * números concretos (`packages/core/src/entitlements/types.ts`) —
+ * `exactOptionalPropertyTypes` proíbe atribuir `undefined` explicitamente às
+ * chaves opcionais, daí o spread condicional em vez de `{ gate: result.gate, ... }`.
+ */
+export function toPaywallData(result: GuardResult): Pick<GuardResult, 'gate' | 'limit' | 'current'> {
+  return {
+    ...(result.gate !== undefined ? { gate: result.gate } : {}),
+    ...(result.limit !== undefined ? { limit: result.limit } : {}),
+    ...(result.current !== undefined ? { current: result.current } : {}),
+  }
+}
+
+/**
+ * Lança `TRPCError({ code: 'FORBIDDEN' })` quando `result.allowed` é falso —
+ * chamar com o retorno de um `can*`/`has*` do core (`canCreateBet`,
+ * `canQueryHistory` etc.) depois de resolver `ctx.getEntitlements()`. O
+ * `cause` (`PaywallError`) carrega o `GuardResult` completo; o
+ * `errorFormatter` acima expõe `gate`/`limit`/`current` em `shape.data.paywall`
+ * para o `PaywallDialog` (docs/09 C6) no cliente.
+ */
+export function guardOrThrow(result: GuardResult): void {
+  if (result.allowed) return
+  const cause = new PaywallError(result)
+  throw new TRPCError({ code: 'FORBIDDEN', message: cause.message, cause })
+}

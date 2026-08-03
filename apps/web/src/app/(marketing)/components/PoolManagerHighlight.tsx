@@ -1,8 +1,15 @@
+import Link from 'next/link'
+
 /**
  * Seção 4 — Bolão Manager, destaque com demo do fluxo convite → Pix →
- * comprovante → rateio (docs/08 §A.3.4). Demo visual é placeholder.
+ * comprovante → rateio (docs/08 §A.3.4).
  */
-const FLOW = ['Convite', 'Pix (P2P)', 'Comprovante', 'Rateio']
+const FLOW = [
+  { step: 'Convite', detail: 'Link + QR code, 1 toque para compartilhar no WhatsApp.' },
+  { step: 'Pix (P2P)', detail: 'Cada participante paga direto na chave do organizador.' },
+  { step: 'Comprovante', detail: 'A aposta oficial anexada, visível para todo mundo.' },
+  { step: 'Rateio', detail: 'Calculado sozinho depois do sorteio, por cota.' },
+]
 
 export function PoolManagerHighlight() {
   return (
@@ -17,23 +24,23 @@ export function PoolManagerHighlight() {
           é sempre direto entre você e o organizador.
         </p>
 
-        {/* Placeholder — demo visual do fluxo. */}
-        <div
-          aria-hidden="true"
-          className="mt-8 flex flex-wrap items-center gap-3"
-        >
-          {FLOW.map((step, i) => (
-            <div key={step} className="flex items-center gap-3">
-              <span className="rounded-full border border-brand-500 bg-white px-4 py-2 text-sm font-semibold text-brand-700">
-                {step}
-              </span>
-              {i < FLOW.length - 1 && (
-                <span className="text-brand-500" aria-hidden="true">
-                  →
-                </span>
-              )}
+        <div className="mt-8 grid gap-4 sm:grid-cols-4">
+          {FLOW.map((item, i) => (
+            <div key={item.step} className="relative rounded-lg border border-brand-500/30 bg-white p-4">
+              <span className="text-xs font-semibold text-brand-500">Passo {i + 1}</span>
+              <p className="mt-1 font-display font-semibold text-brand-900">{item.step}</p>
+              <p className="mt-1 text-sm text-ink-600">{item.detail}</p>
             </div>
           ))}
+        </div>
+
+        <div className="mt-8">
+          <Link
+            href="/recursos/bolao"
+            className="inline-block rounded-md bg-brand-500 px-6 py-3 font-semibold text-white hover:bg-brand-700"
+          >
+            Conhecer o Bolão Manager
+          </Link>
         </div>
       </div>
     </section>

@@ -1,9 +1,12 @@
 import Link from 'next/link'
+import { NumberBall } from '@lotopro/ui'
 
 /**
  * Seção 1 — Hero (docs/08-especificacao-funcional.md §A.3.1).
- * Headline e sub são o texto real do doc; o "mockup do painel no celular" é
- * um placeholder — não faz parte do escopo deste shell.
+ * Headline e sub são o texto real do doc. O "mockup do painel no celular" é
+ * um cartão estilizado com os componentes reais do design system
+ * (NumberBall) — sem imagem/foto de produto ainda, mas honesto sobre o que o
+ * painel mostra (jogo conferido, sem imagética de sorte/cassino — docs/09 §9.8).
  */
 export function Hero() {
   return (
@@ -33,12 +36,20 @@ export function Hero() {
           </div>
         </div>
 
-        {/* Placeholder — mockup do painel no celular (docs/08 §A.3.1). */}
-        <div
-          aria-hidden="true"
-          className="mx-auto flex h-80 w-full max-w-xs items-center justify-center rounded-lg border border-white/20 bg-white/5 text-sm text-brand-100"
-        >
-          [ mockup do painel — placeholder ]
+        {/* Mockup do painel no celular — cartão estilizado, componentes reais do design system. */}
+        <div aria-hidden="true" className="mx-auto w-full max-w-xs rounded-2xl border border-white/15 bg-white p-4 text-ink-900 shadow-xl">
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink-400">Lotofácil · concurso 3040</p>
+          <p className="mt-1 font-display text-sm font-bold text-success">Você acertou 14 números</p>
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {[3, 5, 8, 9, 11, 14, 16, 17, 19, 20, 21, 23, 24, 25].map((n) => (
+              <NumberBall key={n} number={n} state="hit" size="sm" lotterySlug="lotofacil" />
+            ))}
+            <NumberBall number={2} state="missed" size="sm" lotterySlug="lotofacil" />
+          </div>
+          <div className="mt-4 rounded-lg bg-ink-50 p-3">
+            <p className="text-xs text-ink-600">Próximo sorteio</p>
+            <p className="font-display text-sm font-semibold text-ink-900">Hoje, 20h</p>
+          </div>
         </div>
       </div>
     </section>

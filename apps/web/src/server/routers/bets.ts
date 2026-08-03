@@ -13,13 +13,34 @@
  */
 import { TRPCError } from '@trpc/server'
 import { z } from 'zod'
-import { findLotteryConfig, getLotteryConfig, validateBet, type ExtraPicks } from '@lotopro/core'
+import {
+  canCreateBet,
+  canQueryHistory,
+  findLotteryConfig,
+  getLotteryConfig,
+  remaining,
+  validateBet,
+  type Entitlements,
+  type ExtraPicks,
+} from '@lotopro/core'
 import { Prisma, type PrismaClient } from '@lotopro/db'
-import { protectedProcedure, router } from '@/server/trpc'
+import { guardOrThrow, protectedProcedure, router } from '@/server/trpc'
 import { BetValidationError } from '@/server/errors'
+import { applyHistoryCutoff } from '@/server/lib/entitlements'
 import { columnsSchema, extraPicksSchema, lotterySlugSchema, numbersSchema } from '@/server/lib/lottery-schema'
 import { assertValidContestRange, buildBetInput, calculateBetCostCents } from '@/server/lib/bet-cost'
 import { parseColumns, parseExtraPicks, parseTierCounts } from '@/server/lib/bet-json'
+
+/**
+ * Gates de docs/05 §5.4 aplicados nesta onda: **G1** (`create`/`duplicate`,
+ * teto de jogos ativos) e **G7** (`list`/`byId`, janela de histórico). Os
+ * demais dependem de features que ainda não existem neste router — aplicar
+ * quando existirem:
+ * - G2 (conferência automática por modalidade) — settings de notificação, não bets.ts
+ * - G5 (cota de scans OCR) — endpoint de upload de comprovante ainda não existe
+ * - G6 (teto de dezenas em fechamento) — endpoint de fechamento ainda não existe
+ * - G8 (backtesting) — endpoint de estratégias/backtesting ainda não existe
+ */
 
 const betIdInput = z.object({ id: z.string().min(1) })
 
@@ -144,6 +165,24 @@ async function buildStatusWhere(
   }
 }
 
+/**
+ * G1 (docs/05 §5.4) — teto de jogos ativos simultâneos. Conta linhas `Bet`
+ * (`isActive && !deletedAt`), não concursos: um jogo multi-concurso
+ * (`contestTo - contestFrom + 1 > 1`) ainda é UM jogo ativo — o intervalo de
+ * concursos não multiplica o consumo do teto. Usada por `create` e
+ * `duplicate`, que criam um jogo ativo novo cada uma.
+ */
+async function assertCanCreateBet(
+  ctx: { prisma: PrismaClient; getEntitlements: () => Promise<Entitlements> },
+  userId: string,
+): Promise<void> {
+  const [ent, activeBetsCount] = await Promise.all([
+    ctx.getEntitlements(),
+    ctx.prisma.bet.count({ where: { userId, isActive: true, deletedAt: null } }),
+  ])
+  guardOrThrow(canCreateBet(ent, activeBetsCount))
+}
+
 export const betsRouter = router({
   /** docs/08 CL-12/CL-13/CL-14 — cadastro manual, multi-concurso, custo calculado no servidor. */
   create: protectedProcedure.input(createInput).mutation(async ({ ctx, input }) => {
@@ -160,6 +199,8 @@ export const betsRouter = router({
         cause: new BetValidationError(validation.errors),
       })
     }
+
+    await assertCanCreateBet(ctx, ctx.session.user.id)
 
     const lottery = await ctx.prisma.lottery.findUnique({
       where: { slug: input.lotterySlug },
@@ -197,6 +238,15 @@ export const betsRouter = router({
     if (input.prized === false) and.push({ checks: { none: { prizeCents: { gt: 0n } } } })
     if (input.status) and.push(await buildStatusWhere(ctx.prisma, input.status))
 
+    // G7 (docs/05 §5.4) — histórico além da janela do plano fica OCULTO, nunca
+    // apagado (regra de UX de §5.4: downgrade não deleta dado nenhum). Bloquear
+    // a listagem inteira não faz sentido aqui — é uma consulta paginada por
+    // recência, então o corte só reduz o que aparece; `historyLimited` avisa a
+    // UI para mostrar o upsell (docs/09 C6) em vez de deixar o corte silencioso.
+    const ent = await ctx.getEntitlements()
+    const historyFilter = applyHistoryCutoff(ent, new Date())
+    if (historyFilter.createdAt) and.push({ createdAt: historyFilter.createdAt })
+
     const where: Prisma.BetWhereInput = {
       userId,
       deletedAt: null,
@@ -231,7 +281,7 @@ export const betsRouter = router({
       }
     })
 
-    return { items, nextCursor }
+    return { items, nextCursor, historyLimited: historyFilter.historyLimited }
   }),
 
   /** docs/08 CL-21/CL-22 — detalhe com histórico de conferências por concurso. */
@@ -250,6 +300,14 @@ export const betsRouter = router({
     if (!bet || bet.userId !== ctx.session.user.id) {
       throw new TRPCError({ code: 'NOT_FOUND', message: 'Jogo não encontrado.' })
     }
+
+    // G7 — diferente de `list` (que só esconde da listagem), aqui o usuário já
+    // tem o `id` (ex.: link antigo/favorito) e está pedindo ESSE jogo
+    // especificamente: o bloqueio é explícito (FORBIDDEN + paywall), não um
+    // NOT_FOUND genérico, para a UI poder explicar "isso está fora do seu
+    // plano" em vez de "não existe".
+    const ent = await ctx.getEntitlements()
+    guardOrThrow(canQueryHistory(ent, bet.createdAt, new Date()))
 
     const checks = bet.checks.map(mapCheck)
     const totalPrizeCents = checks.reduce((sum, check) => sum + check.prizeCents, 0n)
@@ -348,6 +406,9 @@ export const betsRouter = router({
       throw new TRPCError({ code: 'NOT_FOUND', message: 'Jogo não encontrado.' })
     }
 
+    // G1 — duplicar cria mais um jogo ativo; mesmo guard de `create`.
+    await assertCanCreateBet(ctx, existing.userId)
+
     const config = findLotteryConfig(existing.lottery.slug)
     if (!config) {
       throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Modalidade desconhecida no catálogo do core.' })
@@ -383,7 +444,7 @@ export const betsRouter = router({
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
     const startOfNextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1)
 
-    const [activeBetsCount, monthSpend, monthPrizes, activeBets] = await Promise.all([
+    const [activeBetsCount, monthSpend, monthPrizes, activeBets, ent] = await Promise.all([
       ctx.prisma.bet.count({ where: { userId, isActive: true, deletedAt: null } }),
       ctx.prisma.bet.aggregate({
         where: { userId, deletedAt: null, createdAt: { gte: startOfMonth, lt: startOfNextMonth } },
@@ -397,6 +458,7 @@ export const betsRouter = router({
         where: { userId, isActive: true, deletedAt: null },
         select: { lotteryId: true, contestTo: true, lottery: { select: { slug: true, name: true } } },
       }),
+      ctx.getEntitlements(),
     ])
 
     const byLottery = new Map<string, { slug: string; name: string; maxContestTo: number }>()
@@ -434,11 +496,19 @@ export const betsRouter = router({
       })
       .filter((entry): entry is { lotterySlug: string; lotteryName: string; nextContestNumber: number } => entry !== null)
 
+    // Aviso preventivo G1 (docs/05 §5.4: "avisar ANTES de o usuário perder
+    // trabalho" — ex.: no 20º jogo do Free, "este é seu último jogo no plano
+    // gratuito"). `remaining(...) === 1` é a regra documentada em
+    // `packages/core/src/entitlements/guard.ts`; planos sem teto
+    // (`maxActiveBets: 'unlimited'`) nunca disparam (`remaining` devolve `null`).
+    const lastFreeBetWarning = remaining(canCreateBet(ent, activeBetsCount)) === 1
+
     return {
       activeBetsCount,
       monthSpendCents: monthSpend._sum.costCents ?? 0n,
       monthPrizeCents: monthPrizes._sum.prizeCents ?? 0n,
       nextContestsByLottery,
+      lastFreeBetWarning,
     }
   }),
 })

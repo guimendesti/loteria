@@ -5,7 +5,15 @@
  */
 import { Worker } from 'bullmq'
 import { PrismaClient } from '@lotopro/db'
-import { CaixaOfficialProvider, ResilientResultProvider, ResendEmailSender, NoopPushSender } from '@lotopro/integrations'
+import {
+  AsaasClient,
+  CaixaOfficialProvider,
+  ResilientResultProvider,
+  ResendEmailSender,
+  NoopPushSender,
+  WebPushSender,
+  type PushSender,
+} from '@lotopro/integrations'
 import { loadConfig, ConfigError, type WorkerConfig } from './config'
 import { createRedisConnection, createQueues, closeQueues, QUEUE_NAMES, type Queues } from './queues'
 import { createLogger, type Logger } from './lib/logger'
@@ -19,6 +27,11 @@ import { createSyncResultsJob } from './jobs/sync-results'
 import { createCheckBetsJob } from './jobs/check-bets'
 import { createNotifyJob } from './jobs/notify'
 import { createAccumulatedAlertJob, registerAccumulatedAlertSchedule } from './jobs/accumulated-alert'
+import {
+  createBillingDunningJob,
+  createBillingDunningPrismaAdapter,
+  registerBillingDunningSchedule,
+} from './jobs/billing-dunning'
 import { createSyncWindowGate, registerSyncSchedule, createGatedSyncProcessor } from './scheduler'
 import { createHealthServer } from './health'
 import type Redis from 'ioredis'
@@ -56,10 +69,7 @@ async function bootstrap(): Promise<void> {
   const runNotify = createNotifyJob({
     prisma: createNotifyPrismaAdapter(prisma),
     emailSender: new ResendEmailSender({ apiKey: config.RESEND_API_KEY, from: config.EMAIL_FROM }),
-    // SY-04 — push (Web Push/VAPID) fica como design pronto, sem envio real, até a lib
-    // `web-push` ser instalada pelo orquestrador. Ver decisão em
-    // packages/integrations/src/notify/noop.ts.
-    pushSender: new NoopPushSender(),
+    pushSender: createPushSender(config),
     logger: createLogger('notify'),
   })
 
@@ -97,6 +107,29 @@ async function bootstrap(): Promise<void> {
   // Caixa, só lê o banco local — ver docs/08 SY-10 e jobs/accumulated-alert.ts).
   await registerAccumulatedAlertSchedule(queues.accumulatedAlert)
   rootLogger.info('accumulated-alert.scheduler.registered', {})
+
+  // SY-09 — dunning diário. Só com ASAAS_API_KEY (dev sem conta Asaas roda sem billing).
+  if (config.ASAAS_API_KEY) {
+    const runBillingDunning = createBillingDunningJob({
+      prisma: createBillingDunningPrismaAdapter(prisma),
+      notifyQueue: queues.notify,
+      gateway: new AsaasClient({ apiKey: config.ASAAS_API_KEY }),
+      logger: createLogger('billing-dunning'),
+    })
+    const dunningWorker = new Worker(QUEUE_NAMES.BILLING_DUNNING, () => runBillingDunning(), {
+      connection,
+      concurrency: 1,
+    })
+    // O loop de handlers 'failed' acima roda antes deste bloco — anexar manualmente.
+    dunningWorker.on('failed', (job, error) => {
+      rootLogger.error('worker.job.failed', { queue: dunningWorker.name, jobId: job?.id, error })
+    })
+    workers.push(dunningWorker)
+    await registerBillingDunningSchedule(queues.billingDunning)
+    rootLogger.info('billing-dunning.scheduler.registered', {})
+  } else {
+    rootLogger.warn('billing-dunning.disabled', { reason: 'ASAAS_API_KEY ausente' })
+  }
 
   const healthServer = createHealthServer({
     redis: connection,
@@ -157,3 +190,19 @@ bootstrap().catch((error: unknown) => {
   rootLogger.error('worker.boot.failed', { error })
   process.exitCode = 1
 })
+
+/**
+ * SY-04 — escolhe o sender de push: WebPushSender real quando as três envs VAPID
+ * existem; NoopPushSender caso contrário (dev sem chaves). Chaves: ver ORQUESTRACAO.md.
+ */
+function createPushSender(config: WorkerConfig): PushSender {
+  if (config.VAPID_PUBLIC_KEY && config.VAPID_PRIVATE_KEY && config.VAPID_SUBJECT) {
+    return new WebPushSender({
+      vapidPublicKey: config.VAPID_PUBLIC_KEY,
+      vapidPrivateKey: config.VAPID_PRIVATE_KEY,
+      subject: config.VAPID_SUBJECT,
+    })
+  }
+  rootLogger.warn('push.disabled', { reason: 'VAPID_* ausentes — usando NoopPushSender' })
+  return new NoopPushSender()
+}
