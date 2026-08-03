@@ -106,6 +106,25 @@ export function assertCanConfirmPayment(current: MemberStatus): void {
   }
 }
 
+/** Estados a partir dos quais o PRÓPRIO membro ainda pode sair sozinho (`pool.leave`,
+ * Addendum v2 §4). Mais restritivo que `PAYMENT_ACTIONABLE_FROM`: uma vez que o pagamento
+ * foi DECLARADO (`PAID`) ou CONFIRMADO, dinheiro pode já ter circulado via Pix P2P — o
+ * LotoPro não tem como desfazer isso, então a partir daí só o organizador resolve. */
+const LEAVE_ALLOWED_FROM: readonly MemberStatus[] = [MemberStatus.INVITED, MemberStatus.JOINED]
+
+/** O próprio participante sai do bolão (`pool.leave`). Chamador já deve ter excluído
+ * `MemberStatus.REMOVED` antes (equivale a "não é membro", mensagem própria no router). */
+export function assertCanLeavePool(current: MemberStatus): void {
+  if (!LEAVE_ALLOWED_FROM.includes(current)) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message:
+        'Não é possível sair do bolão depois de declarar ou ter o pagamento confirmado — fale ' +
+        'com o organizador (não dá pra desfazer um Pix que já ocorreu).',
+    })
+  }
+}
+
 // ─── PoolPayout.status ────────────────────────────────────────────────────────
 
 /**

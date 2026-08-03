@@ -11,9 +11,8 @@ import type { PoolCard as PoolCardData } from './types'
 /**
  * C5 (docs/09 §9.4) — cartão de bolão: modalidade, concursos, barra de cotas,
  * valor da cota e — só para o dono — badge de pendências de pagamento.
- * ⚠️ O contrato `PoolCard` não traz nome/avatar do organizador (só existe
- * `role`), então na aba "Participando" o card não identifica quem organiza —
- * ver observações no relatório do agente pool-ui.
+ * Addendum v2 §3: `PoolCard.ownerName` — na aba "Participando" o card mostra
+ * quem organiza o bolão.
  */
 export function PoolCard({ pool }: { pool: PoolCardData }) {
   const contestLabel =
@@ -39,6 +38,11 @@ export function PoolCard({ pool }: { pool: PoolCardData }) {
       <div>
         <p className="font-display text-lg font-semibold text-ink-900">{pool.name}</p>
         <p className="text-sm text-ink-600">{contestLabel}</p>
+        {pool.role === 'MEMBER' ? (
+          <p className="mt-0.5 text-sm text-ink-600">
+            Organizado por <span className="font-medium text-ink-900">{pool.ownerName}</span>
+          </p>
+        ) : null}
       </div>
 
       <ShareProgressBar sharesTaken={pool.sharesTaken} totalShares={pool.totalShares} />

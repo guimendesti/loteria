@@ -9,10 +9,12 @@ import { useSession } from '@/lib/auth-client'
 import { formatCents } from '@/app/(app)/app/components/format-cents'
 import { AddGuestDialog } from '@/components/pool/AddGuestDialog'
 import { InviteLinkBox } from '@/components/pool/InviteLinkBox'
+import { LeavePoolButton } from '@/components/pool/LeavePoolButton'
 import { LegalBanner } from '@/components/pool/LegalBanner'
 import { MemberPaymentPanel } from '@/components/pool/MemberPaymentPanel'
 import { MembersTable } from '@/components/pool/MembersTable'
 import { PayoutPanel } from '@/components/pool/PayoutPanel'
+import { PoolLinkedBetsPanel } from '@/components/pool/PoolLinkedBetsPanel'
 import { PoolStatusControls } from '@/components/pool/PoolStatusControls'
 import { ReceiptBox } from '@/components/pool/ReceiptBox'
 import { ShareProgressBar } from '@/components/pool/ShareProgressBar'
@@ -77,6 +79,14 @@ export default function BolaoDetailPage({ params }: { params: Promise<{ id: stri
   // própria sessão contra `members[].userId` (docs/contracts/onda8-bolao.md).
   const myMember = pool.members.find((member) => member.userId === session?.user.id) ?? null
   const showPayoutPanel = pool.status === 'BET_PLACED' || pool.status === 'SETTLED'
+  // Addendum v2 §4 — espelha `assertCanLeavePool` (server/lib/pool/state-machine.ts):
+  // só oferece "Sair do bolão" enquanto o bolão está aberto e o pagamento do próprio
+  // participante ainda não foi declarado nem confirmado. O servidor recheca de novo.
+  const canLeave =
+    pool.role === 'MEMBER' &&
+    pool.status === 'OPEN' &&
+    myMember !== null &&
+    (myMember.status === 'INVITED' || myMember.status === 'JOINED')
 
   return (
     <div className="max-w-4xl pb-10">
@@ -132,6 +142,8 @@ export default function BolaoDetailPage({ params }: { params: Promise<{ id: stri
 
           <ReceiptBox receiptUrl={pool.receiptUrl} />
 
+          <PoolLinkedBetsPanel poolId={pool.id} />
+
           <div className="rounded-lg border border-ink-200 bg-white p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="font-display text-base font-semibold text-ink-900">Participantes</h2>
@@ -178,6 +190,8 @@ export default function BolaoDetailPage({ params }: { params: Promise<{ id: stri
           <ReceiptBox receiptUrl={pool.receiptUrl} />
 
           {showPayoutPanel ? <PayoutPanel poolId={pool.id} readOnly /> : null}
+
+          {canLeave ? <LeavePoolButton poolId={pool.id} /> : null}
         </div>
       )}
 

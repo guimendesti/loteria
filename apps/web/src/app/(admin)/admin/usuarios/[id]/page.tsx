@@ -37,9 +37,20 @@ export default function AdminUserDetailPage({ params }: { params: Promise<{ id: 
 
       <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
         <h1 className="font-display text-2xl font-bold text-ink-900">{user.name}</h1>
-        <span className="rounded-full bg-brand-100 px-3 py-1 text-xs font-semibold text-brand-700">{user.role}</span>
+        <div className="flex items-center gap-2">
+          {user.blockedAt ? (
+            <span className="rounded-full bg-danger/10 px-3 py-1 text-xs font-semibold text-danger">Bloqueado</span>
+          ) : null}
+          <span className="rounded-full bg-brand-100 px-3 py-1 text-xs font-semibold text-brand-700">{user.role}</span>
+        </div>
       </div>
       <p className="text-sm text-ink-600">{user.email}</p>
+      {user.blockedAt ? (
+        <p className="mt-2 rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">
+          Conta bloqueada em {formatDateTime(user.blockedAt)}
+          {user.blockedReason ? ` — motivo: ${user.blockedReason}` : ''}.
+        </p>
+      ) : null}
       {user.deletedAt ? (
         <p className="mt-2 rounded-md bg-ink-100 px-3 py-2 text-sm text-ink-600">
           Conta anonimizada em {formatDateTime(user.deletedAt)}.
@@ -119,7 +130,7 @@ export default function AdminUserDetailPage({ params }: { params: Promise<{ id: 
       {/* Ações — BO-12..15. */}
       <div className="mt-6">
         <h2 className="font-display text-lg font-semibold text-ink-900">Ações</h2>
-        <ActionsPanel userId={id} />
+        <ActionsPanel userId={id} blockedAt={user.blockedAt} />
       </div>
 
       {/* Timeline de auditoria. */}

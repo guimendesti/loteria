@@ -2,21 +2,15 @@
  * Better Auth — instância de servidor.
  *
  * Adapter Prisma apontando para o client singleton de @lotopro/db (mesma
- * conexão usada pelo resto do app — ver packages/db/src/index.ts).
- *
- * ⚠️ Pendência conhecida (fora do escopo desta tarefa, restrita a apps/web/):
- * o schema Prisma (packages/db/prisma/schema.prisma) ainda não tem os models
- * `Session`, `Account` e `Verification` que o Better Auth espera encontrar em
- * runtime. `prismaAdapter` tipa o client como `{}` (estrutural, sem exigir
- * esses models em tempo de compilação — por isso o typecheck passa), mas o
- * fluxo de auth só funciona de fato depois que esses models forem
- * adicionados ao schema. Ver relatório da tarefa.
+ * conexão usada pelo resto do app — ver packages/db/src/index.ts). Os models
+ * `Session`, `Account` e `Verification` que o Better Auth espera já existem
+ * em packages/db/prisma/schema.prisma.
  *
  * Envs ausentes (sem DATABASE_URL/.env real neste momento) não podem quebrar
  * o typecheck nem o import deste módulo — por isso os fallbacks de string
  * vazia abaixo.
  */
-import { betterAuth } from 'better-auth'
+import { APIError, betterAuth } from 'better-auth'
 import { prismaAdapter } from 'better-auth/adapters/prisma'
 import { prisma } from '@lotopro/db'
 
@@ -64,6 +58,25 @@ export const auth = betterAuth({
         type: 'string',
         input: false,
       },
+      // BO-13 — espelham User.blockedAt/blockedReason (packages/db/prisma/schema.prisma).
+      // Read-only (`input: false`): só o backoffice grava, via `admin.users.toggleBlock`
+      // (server/routers/admin/users.ts), nunca o próprio usuário. Declarados aqui pelo MESMO
+      // motivo de `tenantId` acima: ficam de graça em `session.user` na consulta que o
+      // Better Auth já faz para montar a sessão (`getSession`, uma vez por request em
+      // `server/trpc.ts`/`createTRPCContext`) — sem isso, `protectedProcedure` precisaria de
+      // uma query extra ao `User` em TODA requisição autenticada só para saber se a conta
+      // está bloqueada. `type: 'date'` porque `blockedAt` é timestamp, não boolean — a
+      // ausência (`null`) já significa "não bloqueado", não precisa de um segundo campo.
+      blockedAt: {
+        type: 'date',
+        input: false,
+        required: false,
+      },
+      blockedReason: {
+        type: 'string',
+        input: false,
+        required: false,
+      },
     },
   },
   databaseHooks: {
@@ -90,10 +103,71 @@ export const auth = betterAuth({
         },
       },
     },
+    session: {
+      create: {
+        // BO-13 — segunda camada do bloqueio (a primeira é `protectedProcedure`,
+        // server/trpc.ts): nega a criação de uma sessão NOVA para uma conta bloqueada.
+        // Sem isto, `toggleBlock` revoga as sessões ativas no momento do bloqueio (efeito
+        // imediato), mas nada impediria um login (e-mail/senha OU Google) logo em seguida —
+        // a sessão recém-criada carregaria `blockedAt` preenchido e a PRIMEIRA chamada a
+        // `protectedProcedure` tomaria FORBIDDEN, mas o cookie de sessão já teria sido
+        // emitido, uma inconsistência ruim de UX e um resquício de acesso desnecessário.
+        // Dispara em TODO `createSession` (login por credencial, login social, e também o
+        // signup com `autoSignIn: true`) — nunca em leitura de sessão existente
+        // (`getSession` não chama este hook).
+        before: async (session) => {
+          await rejectBlockedUserSession(prisma, session)
+        },
+      },
+    },
   },
 })
 
 export type Session = typeof auth.$Infer.Session
+
+/**
+ * Porta mínima de Prisma exigida por `rejectBlockedUserSession` — mesmo padrão de
+ * `server/lib/admin/audit.ts` (`AuditPrisma`): só o método realmente usado, para o guard
+ * ser testável com um duplo em memória, sem subir Postgres nem o Better Auth de verdade.
+ */
+export interface BlockGuardPrisma {
+  user: {
+    findUnique(args: { where: { id: string }; select: { blockedAt: true } }): Promise<{ blockedAt: Date | null } | null>
+  }
+}
+
+/**
+ * Guard de `databaseHooks.session.create.before` (BO-13) — nega a criação de sessão quando
+ * `User.blockedAt` está preenchido. Extraído como função nomeada/exportada em vez de ficar
+ * inline no `databaseHooks` para ser testável isoladamente (ver `lib/__tests__/auth.test.ts`)
+ * sem depender do Better Auth/Postgres reais.
+ *
+ * Mensagem deliberadamente genérica — não diz "esta conta está bloqueada" nem distingue de
+ * credencial inválida: revelar o motivo da recusa no momento do login ajudaria a enumerar
+ * quais e-mails têm conta bloqueada (mesma cautela de `signIn` recusar credencial errada com
+ * mensagem genérica). O motivo detalhado (`blockedReason`) só existe no backoffice
+ * (`admin.users.detail`), nunca na resposta do endpoint de login.
+ *
+ * Lança `APIError('FORBIDDEN', ...)` em vez de retornar `false`: o retorno booleano do hook
+ * (`createWithHooks` em better-auth/dist/db/with-hooks) apenas devolve `null` da criação,
+ * sem garantir uma mensagem de erro utilizável para o cliente — lançar é o mecanismo que o
+ * próprio Better Auth usa internamente para abortar um endpoint com um corpo de erro
+ * controlado.
+ */
+export async function rejectBlockedUserSession(
+  prisma: BlockGuardPrisma,
+  session: { userId: string },
+): Promise<void> {
+  const user = await prisma.user.findUnique({
+    where: { id: session.userId },
+    select: { blockedAt: true },
+  })
+  if (user?.blockedAt) {
+    throw new APIError('FORBIDDEN', {
+      message: 'Não foi possível concluir o login. Entre em contato com o suporte.',
+    })
+  }
+}
 
 /**
  * Resolve (uma vez por processo) o tenant padrão da plataforma.

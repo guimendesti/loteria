@@ -23,17 +23,28 @@ import type { PrismaClient } from '@lotopro/db'
 import { MemberStatus, PaymentConfirmation, PayoutStatus, PixKeyType, PoolStatus } from '@lotopro/db'
 import { poolRouter } from '@/server/routers/pool'
 import { encryptSecret } from '@/server/lib/crypto'
+import { normalizePixKeyForPayload } from '@/server/lib/pix-key'
 import { toPaywallData, type Context } from '@/server/trpc'
 import { BetValidationError, PaywallError } from '@/server/errors'
 import { sharesRatioDecimalString } from '@/server/lib/pool/decimal'
 import { generateUniqueInviteCode } from '@/server/lib/pool/invite-code'
+import { enqueuePoolNotify } from '@/server/lib/pool/notify-queue'
 import { maskOwnerPixKey, toPixKeyKind } from '@/server/lib/pool/pix'
 import {
   assertCanConfirmPayment,
   assertCanDeclarePayment,
+  assertCanLeavePool,
   assertCanMarkPayoutPaid,
   assertValidPoolTransition,
 } from '@/server/lib/pool/state-machine'
+
+// `pool.ts` enfileira eventos de `pool-notify` (item 1 do escopo desta tarefa) chamando
+// `enqueuePoolNotify` DEPOIS de cada mutation persistir — mocka-se aqui pra: (a) as
+// asserções de "o que foi enfileirado" não dependerem de um Redis de verdade; (b) simular
+// falha de Redis (`mockRejectedValueOnce`) e provar que a mutation em si não é derrubada.
+vi.mock('@/server/lib/pool/notify-queue', () => ({
+  enqueuePoolNotify: vi.fn(),
+}))
 
 const testTRPC = initTRPC.context<Context>().create({
   transformer: superjson,
@@ -101,6 +112,7 @@ function stringifyWithBigInt(value: unknown): string {
 beforeEach(() => {
   // 32 bytes fixos em base64 — determinístico entre execuções, só para o teste (mesmo padrão de account.test.ts).
   process.env.ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64')
+  vi.mocked(enqueuePoolNotify).mockReset()
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -299,6 +311,362 @@ describe('pool.payments.pixPayload — dono ou o próprio membro', () => {
 
     await expect(caller.payments.pixPayload({ memberId: 'member-1' })).rejects.toMatchObject({ code: 'BAD_REQUEST' })
   })
+
+  it('chave de telefone salva no formato antigo (dígitos soltos, sem "+55") é normalizada — sem isto o Pix quebraria em runtime (core exige E.164)', async () => {
+    const findUnique = vi.fn().mockResolvedValue(
+      memberStub({ ownerPixKeyType: PixKeyType.PHONE, ownerPixKeyEnc: encryptSecret('11999998888') }),
+    )
+    const caller = createCaller(buildContext({ poolMember: { findUnique } }, OWNER_ID))
+
+    const result = await caller.payments.pixPayload({ memberId: 'member-1' })
+    expect(result.emv).toContain('+5511999998888')
+  })
+
+  it('chave inválida mesmo depois de normalizar devolve BAD_REQUEST orientando recadastrar em Conta → Chave Pix', async () => {
+    const findUnique = vi.fn().mockResolvedValue(
+      // Curto demais mesmo depois de normalizar (nem 10 nem 11 dígitos) — o core rejeita.
+      memberStub({ ownerPixKeyType: PixKeyType.PHONE, ownerPixKeyEnc: encryptSecret('123') }),
+    )
+    const caller = createCaller(buildContext({ poolMember: { findUnique } }, OWNER_ID))
+
+    await expect(caller.payments.pixPayload({ memberId: 'member-1' })).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      message: expect.stringContaining('Conta → Chave Pix'),
+    })
+  })
+
+  it('usa User.city do organizador como merchantCity real (item 3), com fallback pra SAO PAULO quando não preenchida', async () => {
+    const findUnique = vi.fn().mockResolvedValue(
+      memberStub({ owner: { name: 'Organizador da Silva', city: 'Belo Horizonte' } }),
+    )
+    const caller = createCaller(buildContext({ poolMember: { findUnique } }, OWNER_ID))
+
+    const result = await caller.payments.pixPayload({ memberId: 'member-1' })
+    expect(result.emv).toContain('BELO HORIZONTE')
+  })
+
+  it('organizador sem User.city cai no fallback SAO PAULO (nunca quebra por falta de cidade)', async () => {
+    const findUnique = vi.fn().mockResolvedValue(
+      memberStub({ owner: { name: 'Organizador da Silva', city: null } }),
+    )
+    const caller = createCaller(buildContext({ poolMember: { findUnique } }, OWNER_ID))
+
+    const result = await caller.payments.pixPayload({ memberId: 'member-1' })
+    expect(result.emv).toContain('SAO PAULO')
+  })
+})
+
+describe('server/lib/pix-key — normalizePixKeyForPayload (item 2 do escopo)', () => {
+  it('telefone gravado como dígitos soltos (formato hoje gravado por account.ts) vira E.164', () => {
+    expect(normalizePixKeyForPayload(PixKeyType.PHONE, '11999998888')).toBe('+5511999998888') // celular, 11 dígitos
+    expect(normalizePixKeyForPayload(PixKeyType.PHONE, '1633334444')).toBe('+551633334444') // fixo, 10 dígitos
+  })
+
+  it('telefone já em E.164 (ou só com o "55" na frente) é idempotente — nunca duplica o "+"', () => {
+    expect(normalizePixKeyForPayload(PixKeyType.PHONE, '+5511999998888')).toBe('+5511999998888')
+    expect(normalizePixKeyForPayload(PixKeyType.PHONE, '5511999998888')).toBe('+5511999998888')
+  })
+
+  it('UUID (RANDOM) vira minúsculas (Addendum v2 §2: "UUID → minúsculas")', () => {
+    expect(normalizePixKeyForPayload(PixKeyType.RANDOM, '550E8400-E29B-41D4-A716-446655440000')).toBe(
+      '550e8400-e29b-41d4-a716-446655440000',
+    )
+  })
+
+  it('CPF/CNPJ ficam só com dígitos; e-mail fica minúsculo', () => {
+    expect(normalizePixKeyForPayload(PixKeyType.CPF, '123.456.789-00')).toBe('12345678900')
+    expect(normalizePixKeyForPayload(PixKeyType.CNPJ, '12.345.678/0001-90')).toBe('12345678000190')
+    expect(normalizePixKeyForPayload(PixKeyType.EMAIL, 'Organizador@GMAIL.com')).toBe('organizador@gmail.com')
+  })
+})
+
+describe('pool.leave — o próprio membro sai (Addendum v2 §4)', () => {
+  it('libera a cota quando o bolão está aberto e o pagamento ainda não foi declarado nem confirmado', async () => {
+    const poolFindUnique = vi.fn().mockResolvedValue({ status: PoolStatus.OPEN })
+    const memberFindUnique = vi.fn().mockResolvedValue({ id: 'member-1', status: MemberStatus.JOINED })
+    const memberUpdate = vi.fn().mockResolvedValue({})
+    const caller = createCaller(
+      buildContext(
+        { pool: { findUnique: poolFindUnique }, poolMember: { findUnique: memberFindUnique, update: memberUpdate } },
+        MEMBER_ID_USER,
+      ),
+    )
+
+    const result = await caller.leave({ poolId: 'pool-1' })
+    expect(result).toEqual({ ok: true })
+    expect(memberUpdate).toHaveBeenCalledWith({ where: { id: 'member-1' }, data: { status: MemberStatus.REMOVED } })
+  })
+
+  it.each([MemberStatus.PAID, MemberStatus.CONFIRMED])(
+    'recusa sair depois do pagamento em status %s — orienta falar com o organizador (Pix já pode ter ocorrido)',
+    async (status) => {
+      const poolFindUnique = vi.fn().mockResolvedValue({ status: PoolStatus.OPEN })
+      const memberFindUnique = vi.fn().mockResolvedValue({ id: 'member-1', status })
+      const memberUpdate = vi.fn()
+      const caller = createCaller(
+        buildContext(
+          { pool: { findUnique: poolFindUnique }, poolMember: { findUnique: memberFindUnique, update: memberUpdate } },
+          MEMBER_ID_USER,
+        ),
+      )
+
+      await expect(caller.leave({ poolId: 'pool-1' })).rejects.toMatchObject({ code: 'BAD_REQUEST' })
+      expect(memberUpdate).not.toHaveBeenCalled()
+    },
+  )
+
+  it('bolão fora de "aberto" (ex.: CLOSED) recusa a saída sem nem checar o participante', async () => {
+    const poolFindUnique = vi.fn().mockResolvedValue({ status: PoolStatus.CLOSED })
+    const memberFindUnique = vi.fn()
+    const caller = createCaller(
+      buildContext({ pool: { findUnique: poolFindUnique }, poolMember: { findUnique: memberFindUnique } }, MEMBER_ID_USER),
+    )
+
+    await expect(caller.leave({ poolId: 'pool-1' })).rejects.toMatchObject({ code: 'BAD_REQUEST' })
+    expect(memberFindUnique).not.toHaveBeenCalled()
+  })
+
+  it('quem não participa do bolão recebe FORBIDDEN', async () => {
+    const poolFindUnique = vi.fn().mockResolvedValue({ status: PoolStatus.OPEN })
+    const memberFindUnique = vi.fn().mockResolvedValue(null)
+    const caller = createCaller(
+      buildContext({ pool: { findUnique: poolFindUnique }, poolMember: { findUnique: memberFindUnique } }, OTHER_USER_ID),
+    )
+
+    await expect(caller.leave({ poolId: 'pool-1' })).rejects.toMatchObject({ code: 'FORBIDDEN' })
+  })
+
+  it('bolão inexistente é NOT_FOUND', async () => {
+    const poolFindUnique = vi.fn().mockResolvedValue(null)
+    const caller = createCaller(buildContext({ pool: { findUnique: poolFindUnique } }, MEMBER_ID_USER))
+
+    await expect(caller.leave({ poolId: 'nao-existe' })).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+})
+
+describe('server/lib/pool/state-machine — assertCanLeavePool', () => {
+  it('permite a partir de INVITED/JOINED', () => {
+    expect(() => assertCanLeavePool(MemberStatus.INVITED)).not.toThrow()
+    expect(() => assertCanLeavePool(MemberStatus.JOINED)).not.toThrow()
+  })
+
+  it('bloqueia a partir de PAID/CONFIRMED', () => {
+    expect(() => assertCanLeavePool(MemberStatus.PAID)).toThrow(TRPCError)
+    expect(() => assertCanLeavePool(MemberStatus.CONFIRMED)).toThrow(TRPCError)
+  })
+})
+
+describe('pool.payout.pixPayload — Addendum v2 §2 (só o dono; chave do PARTICIPANTE, direção oposta de payments.pixPayload)', () => {
+  function payoutStub(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'payout-1',
+      poolId: 'pool-1',
+      poolMemberId: 'member-1',
+      amountCents: 700n,
+      pool: { ownerId: OWNER_ID },
+      poolMember: {
+        user: {
+          name: 'Participante da Silva',
+          city: 'Recife',
+          pixKeyType: PixKeyType.PHONE,
+          // Formato antigo (sem "+55") — mesmo bug do item 2, agora do lado do participante.
+          pixKeyEncrypted: encryptSecret('11999998888'),
+        },
+      },
+      ...overrides,
+    }
+  }
+
+  it('não-dono (nem o próprio participante do rateio) recebe FORBIDDEN', async () => {
+    const findUnique = vi.fn().mockResolvedValue(payoutStub())
+    const caller = createCaller(buildContext({ poolPayout: { findUnique } }, MEMBER_ID_USER))
+
+    await expect(caller.payout.pixPayload({ payoutId: 'payout-1' })).rejects.toMatchObject({ code: 'FORBIDDEN' })
+  })
+
+  it('dono gera o EMV com a chave do participante já normalizada', async () => {
+    const findUnique = vi.fn().mockResolvedValue(payoutStub())
+    const caller = createCaller(buildContext({ poolPayout: { findUnique } }, OWNER_ID))
+
+    const result = await caller.payout.pixPayload({ payoutId: 'payout-1' })
+    expect(result).not.toBeNull()
+    expect(result?.emv).toContain('+5511999998888')
+    expect(result?.emv).toContain('RECIFE')
+    expect(result?.amountCents).toBe(700n)
+  })
+
+  it('convidado sem conta (PoolMember.userId null → user null) devolve null, nunca lança', async () => {
+    const findUnique = vi.fn().mockResolvedValue(payoutStub({ poolMember: { user: null } }))
+    const caller = createCaller(buildContext({ poolPayout: { findUnique } }, OWNER_ID))
+
+    const result = await caller.payout.pixPayload({ payoutId: 'payout-1' })
+    expect(result).toBeNull()
+  })
+
+  it('membro com conta mas sem chave Pix cadastrada devolve null', async () => {
+    const findUnique = vi.fn().mockResolvedValue(
+      payoutStub({ poolMember: { user: { name: 'Fulano', city: null, pixKeyType: null, pixKeyEncrypted: null } } }),
+    )
+    const caller = createCaller(buildContext({ poolPayout: { findUnique } }, OWNER_ID))
+
+    const result = await caller.payout.pixPayload({ payoutId: 'payout-1' })
+    expect(result).toBeNull()
+  })
+
+  it('rateio inexistente é NOT_FOUND', async () => {
+    const findUnique = vi.fn().mockResolvedValue(null)
+    const caller = createCaller(buildContext({ poolPayout: { findUnique } }, OWNER_ID))
+
+    await expect(caller.payout.pixPayload({ payoutId: 'nao-existe' })).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+})
+
+describe('pool.payout.list — memberId/isMine (Addendum v2 §1)', () => {
+  function payoutRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'payout-1',
+      poolMemberId: 'member-1',
+      contestId: 'contest-1',
+      sharesRatio: { toString: () => '0.50000000' },
+      amountCents: 500n,
+      status: PayoutStatus.PENDING,
+      poolMember: { userId: MEMBER_ID_USER, user: { name: 'Fulano' }, guestName: null },
+      ...overrides,
+    }
+  }
+
+  it('isMine é true na linha do próprio membro e false na dos outros', async () => {
+    const poolFindUnique = vi.fn().mockResolvedValue({
+      ownerId: OWNER_ID,
+      members: [{ userId: MEMBER_ID_USER, status: MemberStatus.CONFIRMED }],
+    })
+    const payoutFindMany = vi.fn().mockResolvedValue([
+      payoutRow(),
+      payoutRow({
+        id: 'payout-2',
+        poolMemberId: 'member-2',
+        poolMember: { userId: OTHER_USER_ID, user: { name: 'Ciclano' }, guestName: null },
+      }),
+    ])
+    const contestFindMany = vi.fn().mockResolvedValue([{ id: 'contest-1', number: 2800 }])
+    const caller = createCaller(
+      buildContext(
+        {
+          pool: { findUnique: poolFindUnique },
+          poolPayout: { findMany: payoutFindMany },
+          contest: { findMany: contestFindMany },
+        },
+        MEMBER_ID_USER,
+      ),
+    )
+
+    const rows = await caller.payout.list({ poolId: 'pool-1' })
+    expect(rows.find((row) => row.id === 'payout-1')).toMatchObject({ memberId: 'member-1', isMine: true })
+    expect(rows.find((row) => row.id === 'payout-2')).toMatchObject({ memberId: 'member-2', isMine: false })
+  })
+
+  it('para o dono vendo o rateio (ele não é um PoolMember), isMine é sempre false', async () => {
+    const poolFindUnique = vi.fn().mockResolvedValue({ ownerId: OWNER_ID, members: [] })
+    const payoutFindMany = vi.fn().mockResolvedValue([payoutRow()])
+    const contestFindMany = vi.fn().mockResolvedValue([{ id: 'contest-1', number: 2800 }])
+    const caller = createCaller(
+      buildContext(
+        {
+          pool: { findUnique: poolFindUnique },
+          poolPayout: { findMany: payoutFindMany },
+          contest: { findMany: contestFindMany },
+        },
+        OWNER_ID,
+      ),
+    )
+
+    const rows = await caller.payout.list({ poolId: 'pool-1' })
+    expect(rows[0]?.isMine).toBe(false)
+  })
+})
+
+describe('produtor de eventos pool-notify — falha ao enfileirar NUNCA derruba a mutation (item 1 do escopo)', () => {
+  it('pool.join: Redis fora do ar não impede o participante de entrar, e o evento member.joined é o que se tentou enfileirar', async () => {
+    vi.mocked(enqueuePoolNotify).mockRejectedValueOnce(new Error('ECONNREFUSED'))
+
+    const poolFindUnique = vi.fn().mockResolvedValue({
+      id: 'pool-1',
+      ownerId: OWNER_ID,
+      status: PoolStatus.OPEN,
+      totalShares: 5,
+      shareValueCents: 100n,
+      inviteExpiresAt: null,
+    })
+    const memberFindUnique = vi.fn().mockResolvedValue(null)
+    const aggregate = vi.fn().mockResolvedValue({ _sum: { shares: 0 } })
+    const count = vi.fn().mockResolvedValue(1)
+    const create = vi.fn().mockResolvedValue({ id: 'new-member' })
+
+    const caller = createCaller(
+      buildContext(
+        {
+          pool: { findUnique: poolFindUnique },
+          poolMember: { findUnique: memberFindUnique, aggregate, count, create },
+          ...noActiveSubscriptionStub(),
+        },
+        MEMBER_ID_USER,
+      ),
+    )
+
+    const result = await caller.join({ inviteCode: 'CODE1', shares: 1 })
+    expect(result).toEqual({ poolId: 'pool-1', memberId: 'new-member' })
+    expect(enqueuePoolNotify).toHaveBeenCalledWith({
+      event: 'member.joined',
+      poolId: 'pool-1',
+      poolMemberId: 'new-member',
+    })
+  })
+
+  it('pool.payments.declare: Redis rejeitando não impede o participante de declarar o pagamento (dinheiro/estado já gravados)', async () => {
+    vi.mocked(enqueuePoolNotify).mockRejectedValueOnce(new Error('timeout'))
+
+    const findUnique = vi.fn().mockResolvedValue({
+      id: 'member-1',
+      poolId: 'pool-1',
+      userId: MEMBER_ID_USER,
+      status: MemberStatus.JOINED,
+      amountCents: 500n,
+    })
+    const paymentCreate = vi.fn().mockResolvedValue({ id: 'payment-1' })
+    const memberUpdate = vi.fn().mockResolvedValue({ status: MemberStatus.PAID })
+    const caller = createCaller(
+      buildContext(
+        { poolMember: { findUnique, update: memberUpdate }, poolPayment: { create: paymentCreate } },
+        MEMBER_ID_USER,
+      ),
+    )
+
+    const result = await caller.payments.declare({ memberId: 'member-1' })
+    expect(result).toEqual({ status: MemberStatus.PAID })
+  })
+
+  it('pool.members.confirmPayment: Redis rejeitando não impede o dono de confirmar o pagamento', async () => {
+    vi.mocked(enqueuePoolNotify).mockRejectedValueOnce(new Error('ECONNREFUSED'))
+
+    const findUnique = vi.fn().mockResolvedValue({
+      id: 'member-1',
+      poolId: 'pool-1',
+      status: MemberStatus.PAID,
+      amountCents: 500n,
+      pool: { ownerId: OWNER_ID },
+    })
+    const paymentCreate = vi.fn().mockResolvedValue({ id: 'payment-1' })
+    const memberUpdate = vi.fn().mockResolvedValue({ status: MemberStatus.CONFIRMED })
+    const caller = createCaller(
+      buildContext(
+        { poolMember: { findUnique, update: memberUpdate }, poolPayment: { create: paymentCreate } },
+        OWNER_ID,
+      ),
+    )
+
+    const result = await caller.members.confirmPayment({ memberId: 'member-1' })
+    expect(result).toEqual({ status: MemberStatus.CONFIRMED })
+  })
 })
 
 describe('pool.payout.compute / markPaid — autorização (dono)', () => {
@@ -343,6 +711,8 @@ describe('pool.detail — inviteCode: null para membro comum (invariante 5, regr
     totalCostCents: 1000n,
     shareValueCents: 100n,
     lottery: { slug: 'megasena', name: 'Mega-Sena' },
+    // Addendum v2 §3: `detail` (assim como `PoolCard`) agora seleciona `owner.name`.
+    owner: { name: 'Dono do Bolão' },
     bets: [],
   }
 

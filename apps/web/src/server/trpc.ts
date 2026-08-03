@@ -109,6 +109,25 @@ export const protectedProcedure = t.procedure.use(function isAuthed(opts) {
   if (!ctx.session) {
     throw new TRPCError({ code: 'UNAUTHORIZED' })
   }
+  // BO-13 — conta bloqueada pelo backoffice (`admin.users.toggleBlock`,
+  // routers/admin/users.ts) não passa por NENHUMA procedure protegida — inclusive
+  // `adminProcedure` (server/lib/admin/rbac.ts), que é `protectedProcedure.use(...)`, então
+  // este `.use()` roda ANTES do gate de RBAC do backoffice. `toggleBlock` já revoga as
+  // sessões ativas no exato momento do bloqueio (efeito imediato); este check cobre o que
+  // aquilo não cobre — uma sessão criada por outro caminho/timing (ex.: race entre o
+  // `deleteMany` de sessões e uma requisição já em voo) — e é a MESMA razão de existir do
+  // guard irmão em `databaseHooks.session.create.before` (lib/auth.ts), que impede a
+  // criação de uma sessão NOVA por login.
+  //
+  // Custo: ZERO query extra por requisição. `blockedAt` é um `additionalField` do Better
+  // Auth (lib/auth.ts) — chega de graça em `ctx.session.user`, populado pela MESMA consulta
+  // que `auth.api.getSession()` já faz uma vez por request em `createTRPCContext` acima.
+  if (ctx.session.user.blockedAt) {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: 'Sua conta está bloqueada. Entre em contato com o suporte para mais informações.',
+    })
+  }
   return opts.next({
     ctx: {
       ...ctx,

@@ -9,6 +9,7 @@
  */
 import { useState } from 'react'
 import { trpc } from '@/lib/trpc'
+import { ConfirmDialog } from '@/components/pool/ConfirmDialog'
 import { useAdminRole } from '../../../../components/AdminRoleContext'
 
 const ROLE_OPTIONS = ['CUSTOMER', 'VIEWER', 'SUPPORT', 'FINANCE', 'ADMIN'] as const
@@ -33,7 +34,7 @@ function ActionResult({ message, tone }: { message: string; tone: 'success' | 'e
   return <p className={`mt-2 text-sm ${tone === 'success' ? 'text-success' : 'text-danger'}`}>{message}</p>
 }
 
-export function ActionsPanel({ userId }: { userId: string }) {
+export function ActionsPanel({ userId, blockedAt }: { userId: string; blockedAt: Date | null }) {
   const adminRole = useAdminRole()
   const utils = trpc.useUtils()
 
@@ -46,7 +47,7 @@ export function ActionsPanel({ userId }: { userId: string }) {
     <div className="mt-6 grid gap-4 sm:grid-cols-2">
       <SetPlanCard userId={userId} onDone={invalidateDetail} />
       <GrantTrialCard userId={userId} onDone={invalidateDetail} />
-      <BlockCard userId={userId} onDone={invalidateDetail} />
+      <BlockCard userId={userId} blockedAt={blockedAt} onDone={invalidateDetail} />
       <ExportDataCard userId={userId} />
       {adminRole === 'ADMIN' ? <SetRoleCard userId={userId} onDone={invalidateDetail} /> : null}
       {adminRole === 'ADMIN' ? <AnonymizeCard userId={userId} onDone={invalidateDetail} /> : null}
@@ -190,22 +191,33 @@ function SetRoleCard({ userId, onDone }: { userId: string; onDone: () => void })
   )
 }
 
-function BlockCard({ userId, onDone }: { userId: string; onDone: () => void }) {
+/**
+ * BO-13 — bloqueio/desbloqueio real: revoga sessões ativas e impede login enquanto
+ * bloqueado (`server/trpc.ts` + `lib/auth.ts`, fora deste componente). O rótulo/ação do
+ * botão reflete o estado ATUAL (`blockedAt`, vindo de `admin.users.detail` — o pai
+ * re-renderiza com o valor novo assim que `onDone` invalida a query, então o botão já
+ * nasce correto na próxima interação). Confirmação via `ConfirmDialog` (mesmo componente
+ * de `components/pool/ConfirmDialog.tsx`, já usado em ações destrutivas de bolão) —
+ * bloquear desconecta o usuário na hora, por isso pede confirmação explícita mesmo sem o
+ * peso de uma ação irreversível como `anonymize`.
+ */
+function BlockCard({ userId, blockedAt, onDone }: { userId: string; blockedAt: Date | null; onDone: () => void }) {
   const [reason, setReason] = useState('')
-  const mutation = trpc.admin.users.toggleBlock.useMutation({ onSuccess: onDone })
+  const [confirming, setConfirming] = useState(false)
+  const mutation = trpc.admin.users.toggleBlock.useMutation({
+    onSuccess: () => {
+      setReason('')
+      onDone()
+    },
+  })
+  const isBlocked = blockedAt !== null
 
   return (
     <ActionCard
-      title="Encerrar sessões (bloqueio parcial)"
-      description="Não implementado por completo — ver aviso após executar."
+      title={isBlocked ? 'Desbloquear conta' : 'Bloquear conta'}
+      description="BO-13 — revoga sessões ativas e impede login enquanto bloqueada; gera auditoria."
     >
-      <form
-        onSubmit={(event) => {
-          event.preventDefault()
-          mutation.mutate({ userId, blocked: true, ...(reason.trim() ? { reason: reason.trim() } : {}) })
-        }}
-        className="flex flex-col gap-2"
-      >
+      <div className="flex flex-col gap-2">
         <textarea
           value={reason}
           onChange={(event) => setReason(event.target.value)}
@@ -214,14 +226,44 @@ function BlockCard({ userId, onDone }: { userId: string; onDone: () => void }) {
           className="rounded-md border border-ink-200 px-3 py-2 text-sm"
         />
         <button
-          type="submit"
+          type="button"
+          onClick={() => setConfirming(true)}
           disabled={mutation.isPending}
-          className="self-start rounded-md border border-danger px-3 py-1.5 text-sm font-semibold text-danger hover:bg-danger/10 disabled:opacity-50"
+          className={
+            isBlocked
+              ? 'self-start rounded-md bg-brand-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50'
+              : 'self-start rounded-md border border-danger px-3 py-1.5 text-sm font-semibold text-danger hover:bg-danger/10 disabled:opacity-50'
+          }
         >
-          {mutation.isPending ? 'Executando…' : 'Encerrar sessões ativas'}
+          {mutation.isPending ? 'Executando…' : isBlocked ? 'Desbloquear' : 'Bloquear'}
         </button>
-      </form>
-      {mutation.isSuccess ? <ActionResult tone="success" message={mutation.data.message} /> : null}
+      </div>
+
+      {confirming ? (
+        <ConfirmDialog
+          title={isBlocked ? 'Desbloquear esta conta?' : 'Bloquear esta conta?'}
+          description={
+            isBlocked
+              ? 'O usuário volta a conseguir fazer login normalmente.'
+              : 'As sessões ativas são encerradas imediatamente e o login fica recusado até um administrador desbloquear.'
+          }
+          confirmLabel={isBlocked ? 'Desbloquear' : 'Bloquear'}
+          destructive={!isBlocked}
+          isLoading={mutation.isPending}
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => {
+            setConfirming(false)
+            mutation.mutate({ userId, blocked: !isBlocked, ...(reason.trim() ? { reason: reason.trim() } : {}) })
+          }}
+        />
+      ) : null}
+
+      {mutation.isSuccess ? (
+        <ActionResult
+          tone="success"
+          message={mutation.data.blocked ? 'Conta bloqueada.' : 'Conta desbloqueada.'}
+        />
+      ) : null}
       {mutation.isError ? <ActionResult tone="error" message={mutation.error.message} /> : null}
     </ActionCard>
   )

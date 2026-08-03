@@ -10,6 +10,8 @@ import { parseColumns, parseExtraPicks } from '@/server/lib/bet-json'
 import { formatCents } from '../../components/format-cents'
 import { ExtraPicksDisplay } from '../../components/ExtraPicksDisplay'
 import { DuplicateBetDialog } from '../../components/DuplicateBetDialog'
+import { BetPoolBadge } from '../../components/BetPoolBadge'
+import { EDITABLE_POOL_STATUSES, PoolLinkSelect } from '../../components/PoolLinkSelect'
 import { SOURCE_LABEL } from '../../components/labels'
 
 const dateFormatter = new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' })
@@ -25,6 +27,9 @@ export default function BetDetailPage({ params }: { params: Promise<{ id: string
 
   const [showDuplicate, setShowDuplicate] = useState(false)
   const [notesDraft, setNotesDraft] = useState<string | null>(null)
+  // Onda 8b — `undefined` = sem edição pendente do vínculo de bolão (mostra o
+  // valor atual do servidor); `string | null` = rascunho local ainda não salvo.
+  const [poolDraft, setPoolDraft] = useState<string | null | undefined>(undefined)
 
   const archiveMutation = trpc.bets.archive.useMutation({
     onSuccess: () => {
@@ -37,6 +42,13 @@ export default function BetDetailPage({ params }: { params: Promise<{ id: string
     onSuccess: () => {
       utils.bets.byId.invalidate({ id })
       setNotesDraft(null)
+    },
+  })
+  const assignPoolMutation = trpc.bets.assignPool.useMutation({
+    onSuccess: () => {
+      utils.bets.byId.invalidate({ id })
+      utils.bets.list.invalidate()
+      setPoolDraft(undefined)
     },
   })
 
@@ -71,6 +83,11 @@ export default function BetDetailPage({ params }: { params: Promise<{ id: string
   const extra = parseExtraPicks(bet.extraPicks)
   const columns = parseColumns(bet.columns)
   const contestCount = bet.contestTo - bet.contestFrom + 1
+  // Onda 8b — sem bolão vinculado, ou vinculado a um que ainda aceita mudança
+  // de jogos (DRAFT/OPEN/CLOSED). A partir de BET_PLACED o servidor recusa
+  // qualquer troca — aqui só escondemos o controle para não oferecer uma ação
+  // que vai bater erro.
+  const poolIsEditable = bet.pool === null || EDITABLE_POOL_STATUSES.includes(bet.pool.status)
 
   return (
     <div className="max-w-3xl">
@@ -87,6 +104,7 @@ export default function BetDetailPage({ params }: { params: Promise<{ id: string
           {!bet.isActive ? (
             <span className="rounded-full bg-ink-50 px-2 py-0.5 text-xs font-medium text-ink-400">Arquivado</span>
           ) : null}
+          <BetPoolBadge pool={bet.pool} />
         </div>
         <div className="flex gap-2">
           <button
@@ -142,6 +160,48 @@ export default function BetDetailPage({ params }: { params: Promise<{ id: string
           </span>
           <span className="font-display text-lg font-semibold text-ink-900">{formatCents(bet.costCents)}</span>
         </div>
+      </div>
+
+      {/* vínculo com bolão (Onda 8b, docs/contracts/onda8-bolao.md) */}
+      <div className="mt-6 rounded-lg border border-ink-200 bg-white p-5">
+        <h2 className="font-display text-base font-semibold text-ink-900">Bolão</h2>
+
+        {poolIsEditable ? (
+          <div className="mt-3">
+            <PoolLinkSelect
+              value={poolDraft !== undefined ? poolDraft : (bet.pool?.id ?? null)}
+              onChange={setPoolDraft}
+              lotterySlug={lotterySlug}
+            />
+            {poolDraft !== undefined && poolDraft !== (bet.pool?.id ?? null) ? (
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => assignPoolMutation.mutate({ betId: bet.id, poolId: poolDraft })}
+                  disabled={assignPoolMutation.isPending}
+                  className="rounded-md bg-brand-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60"
+                >
+                  {assignPoolMutation.isPending ? 'Salvando…' : 'Salvar vínculo'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPoolDraft(undefined)}
+                  className="rounded-md px-3 py-1.5 text-sm font-medium text-ink-600 hover:bg-ink-50"
+                >
+                  Cancelar
+                </button>
+              </div>
+            ) : null}
+            {assignPoolMutation.isError ? (
+              <p className="mt-2 text-sm text-danger">{assignPoolMutation.error.message}</p>
+            ) : null}
+          </div>
+        ) : (
+          <p className="mt-2 text-sm text-ink-600">
+            Os jogos do bolão &ldquo;{bet.pool?.name}&rdquo; já foram registrados na lotérica — o vínculo está
+            congelado e não pode mais ser alterado por aqui.
+          </p>
+        )}
       </div>
 
       {/* observações */}

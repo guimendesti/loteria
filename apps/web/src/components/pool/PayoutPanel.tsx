@@ -5,6 +5,7 @@ import type { LotterySlug } from '@lotopro/core'
 import { trpc } from '@/lib/trpc'
 import { formatCents } from '@/app/(app)/app/components/format-cents'
 import { formatShareRatioPercent } from './format-ratio'
+import { PayoutPixButton } from './PayoutPixButton'
 import { PayoutStatusBadge } from './StatusBadges'
 
 export interface PayoutPanelProps {
@@ -23,9 +24,10 @@ export interface PayoutPanelProps {
  * — resolvido aqui via `contests.byNumber`, mesmo padrão já usado em
  * `app/jogos/[id]` para casar conferência com o concurso.
  *
- * ⚠️ `PayoutRow` (contrato) não traz `pixPayload` nem `memberId`: o dono não
- * tem, pela API documentada, como gerar o Pix de devolução (CL-50) direto
- * desta tela — ver observações no relatório do agente pool-ui.
+ * Addendum v2 §1/§2: `PayoutRow` traz `memberId`+`isMine` — a linha do próprio
+ * participante ganha destaque visual (borda/fundo `brand`) E textual (badge "Você"),
+ * nunca só cor. `pool.payout.pixPayload` (só dono) gera o Pix de devolução por linha
+ * pendente via `PayoutPixButton`, sob demanda (não dispara N queries de uma vez).
  */
 export function PayoutPanel({ poolId, lotterySlug, bets = [], readOnly = false }: PayoutPanelProps) {
   const contestNumbers = useMemo(() => [...new Set(bets.map((bet) => bet.contestNumber))].sort((a, b) => a - b), [bets])
@@ -117,8 +119,18 @@ export function PayoutPanel({ poolId, lotterySlug, bets = [], readOnly = false }
               </thead>
               <tbody>
                 {rows.map((row) => (
-                  <tr key={row.id} className="border-t border-ink-200">
-                    <td className="py-2 text-ink-900">{row.memberName}</td>
+                  <tr
+                    key={row.id}
+                    className={`border-t border-ink-200 ${row.isMine ? 'border-l-4 border-l-brand-500 bg-brand-100/40' : ''}`}
+                  >
+                    <td className="py-2 text-ink-900">
+                      {row.memberName}
+                      {row.isMine ? (
+                        <span className="ml-2 rounded-full bg-brand-100 px-2 py-0.5 text-xs font-semibold text-brand-700">
+                          Você
+                        </span>
+                      ) : null}
+                    </td>
                     <td className="py-2 text-ink-900">{row.contestNumber}</td>
                     <td className="py-2 text-ink-900">{formatShareRatioPercent(row.sharesRatio)}</td>
                     <td className="py-2 font-medium text-ink-900">{formatCents(row.amountCents)}</td>
@@ -128,14 +140,17 @@ export function PayoutPanel({ poolId, lotterySlug, bets = [], readOnly = false }
                     {!readOnly ? (
                       <td className="py-2 text-right">
                         {row.status === 'PENDING' ? (
-                          <button
-                            type="button"
-                            onClick={() => markPaid.mutate({ payoutId: row.id })}
-                            disabled={markPaid.isPending}
-                            className="rounded-md border border-success/40 px-2.5 py-1.5 text-xs font-semibold text-success hover:bg-success/10 disabled:opacity-60"
-                          >
-                            Marcar como pago
-                          </button>
+                          <div className="flex flex-col items-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => markPaid.mutate({ payoutId: row.id })}
+                              disabled={markPaid.isPending}
+                              className="rounded-md border border-success/40 px-2.5 py-1.5 text-xs font-semibold text-success hover:bg-success/10 disabled:opacity-60"
+                            >
+                              Marcar como pago
+                            </button>
+                            <PayoutPixButton payoutId={row.id} memberName={row.memberName} />
+                          </div>
                         ) : null}
                       </td>
                     ) : null}
@@ -147,9 +162,19 @@ export function PayoutPanel({ poolId, lotterySlug, bets = [], readOnly = false }
 
           <div className="flex flex-col gap-3 md:hidden">
             {rows.map((row) => (
-              <div key={row.id} className="rounded-lg border border-ink-200 p-3">
+              <div
+                key={row.id}
+                className={`rounded-lg border p-3 ${row.isMine ? 'border-brand-500 bg-brand-100/40' : 'border-ink-200'}`}
+              >
                 <div className="flex items-start justify-between gap-2">
-                  <p className="font-medium text-ink-900">{row.memberName}</p>
+                  <p className="font-medium text-ink-900">
+                    {row.memberName}
+                    {row.isMine ? (
+                      <span className="ml-2 rounded-full bg-brand-100 px-2 py-0.5 text-xs font-semibold text-brand-700">
+                        Você
+                      </span>
+                    ) : null}
+                  </p>
                   <PayoutStatusBadge status={row.status} />
                 </div>
                 <p className="mt-1 text-sm text-ink-600">
@@ -157,14 +182,19 @@ export function PayoutPanel({ poolId, lotterySlug, bets = [], readOnly = false }
                 </p>
                 <p className="mt-1 font-semibold text-ink-900">{formatCents(row.amountCents)}</p>
                 {!readOnly && row.status === 'PENDING' ? (
-                  <button
-                    type="button"
-                    onClick={() => markPaid.mutate({ payoutId: row.id })}
-                    disabled={markPaid.isPending}
-                    className="mt-2 w-full rounded-md border border-success/40 px-3 py-2 text-sm font-semibold text-success hover:bg-success/10 disabled:opacity-60"
-                  >
-                    Marcar como pago
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => markPaid.mutate({ payoutId: row.id })}
+                      disabled={markPaid.isPending}
+                      className="mt-2 w-full rounded-md border border-success/40 px-3 py-2 text-sm font-semibold text-success hover:bg-success/10 disabled:opacity-60"
+                    >
+                      Marcar como pago
+                    </button>
+                    <div className="mt-2">
+                      <PayoutPixButton payoutId={row.id} memberName={row.memberName} />
+                    </div>
+                  </>
                 ) : null}
               </div>
             ))}

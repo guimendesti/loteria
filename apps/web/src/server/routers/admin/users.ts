@@ -43,6 +43,8 @@ const listInput = z.object({
   role: z.nativeEnum(UserRole).optional(),
   /** Inclui contas anonimizadas/soft-deleted (BO-15) — ocultas por padrão. */
   includeDeleted: z.boolean().default(false),
+  /** BO-13 — filtra por estado de bloqueio. Omitido: mostra bloqueadas e não bloqueadas. */
+  blocked: z.boolean().optional(),
   cursor: z.string().min(1).optional(),
   limit: z.number().int().min(1).max(100).default(20),
 })
@@ -56,6 +58,8 @@ const userListSelect = {
   createdAt: true,
   lastSeenAt: true,
   deletedAt: true,
+  blockedAt: true,
+  blockedReason: true,
   subscription: {
     select: { status: true, plan: { select: { slug: true, name: true } } },
   },
@@ -76,6 +80,8 @@ const userDetailSelect = {
   timezone: true,
   lastSeenAt: true,
   deletedAt: true,
+  blockedAt: true,
+  blockedReason: true,
   createdAt: true,
   updatedAt: true,
   avatarUrl: true,
@@ -189,6 +195,9 @@ export const adminUsersRouter = router({
     }
     if (input.role) and.push({ role: input.role })
     if (input.planSlug) and.push({ subscription: { plan: { slug: input.planSlug } } })
+    if (input.blocked !== undefined) {
+      and.push({ blockedAt: input.blocked ? { not: null } : null })
+    }
     if (input.status) {
       and.push(
         input.status === 'free'
@@ -429,38 +438,84 @@ export const adminUsersRouter = router({
   }),
 
   /**
-   * BO-12 (bloquear/desbloquear) — DECISÃO DE DESIGN (ver relatório da tarefa).
+   * BO-13 — bloqueio administrativo real. `User.blockedAt`/`blockedReason`
+   * (packages/db/prisma/schema.prisma, migration `20260803T2_user_block_and_city`)
+   * carregam o estado; DUAS camadas fecham o acesso a partir daqui:
+   * - `protectedProcedure` (server/trpc.ts) recusa qualquer sessão cujo `blockedAt` esteja
+   *   preenchido — cobre sessões que já existiam antes do bloqueio.
+   * - `databaseHooks.session.create.before` (lib/auth.ts) recusa a CRIAÇÃO de uma sessão
+   *   nova (login) para uma conta bloqueada.
+   * Este mutation só grava o estado e faz a revogação imediata de sessões ativas — as duas
+   * camadas acima são o que de fato barra o acesso.
    *
-   * O schema (`packages/db`, fora do território desta tarefa) não tem NENHUM campo de
-   * bloqueio. `User.deletedAt` já tem semântica própria e conflitante (soft delete /
-   * anonimização LGPD — `anonymize` abaixo): reaproveitá-lo aqui faria um usuário
-   * "bloqueado" parecer anonimizado/excluído para o resto do sistema (login, listagens,
-   * `anonymize`), o que é PIOR do que não ter a feature — nenhum outro campo existente
-   * serve sem sobrecarregar um significado que já é usado para outra coisa.
+   * Diferente de `deletedAt` (soft delete / anonimização LGPD, `anonymize` abaixo):
+   * bloquear NUNCA apaga/mascara dado nenhum, e é reversível por outro admin a qualquer
+   * momento (`blocked: false` limpa os dois campos).
    *
-   * Implementação honesta dentro do território permitido: encerra AGORA todas as sessões
-   * ativas do usuário (logout imediato, efeito real) e registra a INTENÇÃO em `AuditLog` —
-   * mas NÃO impede um novo login (e-mail/senha continuam válidos): `implemented: false` na
-   * resposta é para a UI mostrar isso com todas as letras, não fingir um controle que não
-   * existe. Bloqueio persistente de verdade exige um campo no schema (`User.blockedAt`,
-   * proposto) — pendência para o dono do schema/orquestrador.
+   * Idempotente nos dois sentidos, de propósito (BO-13 pede isto explicitamente): bloquear
+   * quem já está bloqueado não é erro (mantém o `blockedAt` ORIGINAL — a data do PRIMEIRO
+   * bloqueio, não reseta o relógio a cada clique —, mas atualiza `blockedReason` se um novo
+   * motivo foi informado); desbloquear quem já está desbloqueado também não é erro.
+   *
+   * Sessões só são revogadas ao BLOQUEAR — ao desbloquear não há nada para revogar (login
+   * já estava recusado desde o bloqueio, então nenhuma sessão pode ter sido criada nesse
+   * meio-tempo).
    */
   toggleBlock: adminProcedure('SUPPORT').input(toggleBlockInput).mutation(async ({ ctx, input }) => {
     requirePermission(ctx, 'users:block:write')
 
-    const user = await ctx.prisma.user.findUnique({ where: { id: input.userId }, select: { id: true } })
+    // Guarda de auto-lockout — mesmo raciocínio e mesma mensagem-base de `anonymize`
+    // abaixo: um admin bloqueando a PRÓPRIA conta perde acesso ao backoffice imediatamente
+    // (sessão revogada + login recusado por `databaseHooks.session.create.before`), sem
+    // caminho de recuperação pela aplicação se for o único ADMIN. Só bloqueia o sentido
+    // PERIGOSO (`blocked: true`); desbloquear a própria conta não tem esse risco — mas, na
+    // prática, um admin já bloqueado nunca consegue chamar esta procedure de novo mesmo
+    // para se desbloquear (`protectedProcedure` já recusa a sessão dele): a reversão sempre
+    // precisa de OUTRO admin, por design.
+    if (input.blocked && input.userId === ctx.session.user.id) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message:
+          'Você não pode bloquear a própria conta pelo backoffice (risco de lockout). ' +
+          'Peça a outro administrador.',
+      })
+    }
+
+    const user = await ctx.prisma.user.findUnique({
+      where: { id: input.userId },
+      select: { id: true, blockedAt: true },
+    })
     if (!user) throw new TRPCError({ code: 'NOT_FOUND', message: 'Usuário não encontrado.' })
 
-    const revoked = await ctx.prisma.session.deleteMany({ where: { userId: input.userId } })
+    const before = { blockedAt: user.blockedAt }
+
+    const updated = await ctx.prisma.user.update({
+      where: { id: input.userId },
+      data: input.blocked
+        ? {
+            // Preserva a data do primeiro bloqueio se já estava bloqueado (idempotência —
+            // ver docblock acima); só carimba `now` na transição desbloqueado → bloqueado.
+            blockedAt: user.blockedAt ?? new Date(),
+            blockedReason: input.reason ?? null,
+          }
+        : { blockedAt: null, blockedReason: null },
+      select: { id: true, blockedAt: true, blockedReason: true },
+    })
+
+    // Só revoga sessão ao BLOQUEAR (ver docblock acima) — `deleteMany` sem match nenhum
+    // (conta que não tinha sessão ativa) devolve `count: 0` sem erro, então bloquear
+    // duas vezes seguidas continua idempotente aqui também.
+    const revoked = input.blocked ? await ctx.prisma.session.deleteMany({ where: { userId: input.userId } }) : { count: 0 }
 
     await writeAudit(ctx.prisma, {
       actorId: ctx.session.user.id,
       actorRole: ctx.session.user.role,
-      action: input.blocked ? 'admin.user.block_requested' : 'admin.user.unblock_requested',
+      action: input.blocked ? 'admin.user.blocked' : 'admin.user.unblocked',
       entityType: 'User',
       entityId: input.userId,
+      before,
       after: {
-        blocked: input.blocked,
+        blockedAt: updated.blockedAt,
         sessionsRevoked: revoked.count,
         ...(input.reason !== undefined ? { reason: input.reason } : {}),
       },
@@ -469,10 +524,10 @@ export const adminUsersRouter = router({
     })
 
     return {
-      implemented: false as const,
+      blocked: updated.blockedAt !== null,
+      blockedAt: updated.blockedAt,
+      blockedReason: updated.blockedReason,
       sessionsRevoked: revoked.count,
-      message:
-        'Bloqueio persistente não implementado (requer campo novo no schema, fora do território desta tarefa). As sessões ativas foram encerradas agora, mas um novo login continua possível.',
     }
   }),
 

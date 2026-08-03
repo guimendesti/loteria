@@ -74,12 +74,13 @@ export function maskOwnerPixKey(type: PixKeyType, value: string): string {
 }
 
 /**
- * ⚠️ GAP DE SCHEMA (ver relatório): o padrão EMV/BR Code exige `merchantCity` (máx. 15
- * chars) no payload Pix, mas nem `User` nem `Pool` têm um campo de cidade em
- * `packages/db/prisma/schema.prisma` — fora do território deste agente alterar o schema.
- * Usamos um valor fixo genérico até o schema ganhar um campo real; bancos recebedores
- * não validam este campo contra um cadastro (é só exibido), então não bloqueia o Pix,
- * mas é cosmeticamente errado mostrar sempre "SAO PAULO" pro organizador de outra cidade.
+ * Fallback de `merchantCity` (EMV/BR Code, máx. 15 chars) quando o recebedor (organizador
+ * OU participante, conforme o fluxo) não preencheu `User.city` (migration
+ * `20260803T2_user_block_and_city` — o gap de schema que motivava um valor fixo aqui foi
+ * fechado; ver `pool.ts`, `payments.pixPayload`/`payout.pixPayload`, que agora usam
+ * `user.city ?? DEFAULT_MERCHANT_CITY`). Bancos recebedores não validam este campo contra
+ * um cadastro (é só exibido no app de quem paga), então nunca bloqueia o Pix — mas ainda é
+ * cosmeticamente errado mostrar "SAO PAULO" pra quem preencheu a cidade de verdade.
  */
 export const DEFAULT_MERCHANT_CITY = 'SAO PAULO'
 

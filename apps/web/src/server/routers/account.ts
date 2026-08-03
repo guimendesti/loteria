@@ -200,7 +200,17 @@ const pixKeyRouter = router({
     return { configured: true, type: user.pixKeyType, masked: maskPixKeyValue(user.pixKeyType, decrypted) }
   }),
 
-  /** CL-102 — valida por tipo, cifra com AES-256-GCM e grava. Retorna só a versão mascarada. */
+  /**
+   * CL-102 — valida por tipo, cifra com AES-256-GCM e grava. Retorna só a versão mascarada.
+   *
+   * ⚠️ A forma canônica gravada aqui (telefone como DDD+número, sem `+55`) NÃO é a que o
+   * padrão EMV do BR Code exige (E.164). Isso é deliberado e a conversão acontece na
+   * leitura, em `server/lib/pix-key.ts#normalizePixKeyForPayload` — que é idempotente e
+   * também conserta as linhas gravadas antes dessa distinção existir. Não "unifique" os
+   * dois formatos gravando E.164 aqui sem antes migrar as linhas existentes e conferir
+   * `maskPixKeyValue`: já houve um bug em que o Pix do bolão falhava em runtime,
+   * silenciosamente, para quem tinha cadastrado telefone.
+   */
   set: protectedProcedure
     .input(z.object({ type: z.nativeEnum(PixKeyType), value: z.string().trim().min(1).max(140) }))
     .mutation(async ({ ctx, input }): Promise<PixKeyDTO> => {

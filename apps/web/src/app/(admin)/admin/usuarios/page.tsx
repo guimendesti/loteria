@@ -12,8 +12,11 @@ import { formatDate } from '../../components/format'
 // `(app)/app/jogos/page.tsx` (`type StatusFilter = 'all' | 'active' | 'finished'` local).
 const ROLE_OPTIONS = ['CUSTOMER', 'VIEWER', 'SUPPORT', 'FINANCE', 'ADMIN'] as const
 const STATUS_OPTIONS = ['free', 'trialing', 'active', 'past_due', 'canceled', 'expired'] as const
+/** BO-13 — filtro de bloqueio. `''` = todos, sem filtrar por `blockedAt` no servidor. */
+const BLOCKED_OPTIONS = ['blocked', 'not_blocked'] as const
 type RoleOption = (typeof ROLE_OPTIONS)[number]
 type StatusOption = (typeof STATUS_OPTIONS)[number]
+type BlockedOption = (typeof BLOCKED_OPTIONS)[number]
 
 const STATUS_LABEL: Record<StatusOption, string> = {
   free: 'Sem assinatura',
@@ -24,6 +27,11 @@ const STATUS_LABEL: Record<StatusOption, string> = {
   expired: 'Expirada',
 }
 
+const BLOCKED_LABEL: Record<BlockedOption, string> = {
+  blocked: 'Bloqueados',
+  not_blocked: 'Não bloqueados',
+}
+
 /** BO-10 — listagem de usuários: busca + filtros + paginação por cursor. */
 export default function AdminUsersPage() {
   const [searchInput, setSearchInput] = useState('')
@@ -31,6 +39,7 @@ export default function AdminUsersPage() {
   const [role, setRole] = useState<RoleOption | ''>('')
   const [status, setStatus] = useState<StatusOption | ''>('')
   const [planSlug, setPlanSlug] = useState('')
+  const [blocked, setBlocked] = useState<BlockedOption | ''>('')
 
   // Debounce simples: evita 1 query por tecla digitada.
   useEffect(() => {
@@ -44,6 +53,7 @@ export default function AdminUsersPage() {
       ...(role ? { role } : {}),
       ...(status ? { status } : {}),
       ...(planSlug.trim() ? { planSlug: planSlug.trim() } : {}),
+      ...(blocked ? { blocked: blocked === 'blocked' } : {}),
       limit: 20,
     },
     { getNextPageParam: (lastPage) => lastPage.nextCursor },
@@ -51,7 +61,7 @@ export default function AdminUsersPage() {
 
   const items = query.data?.pages.flatMap((page) => page.items) ?? []
   const isEmpty = !query.isLoading && items.length === 0
-  const hasFilters = search !== '' || role !== '' || status !== '' || planSlug.trim() !== ''
+  const hasFilters = search !== '' || role !== '' || status !== '' || planSlug.trim() !== '' || blocked !== ''
 
   return (
     <div>
@@ -100,6 +110,19 @@ export default function AdminUsersPage() {
           className="w-40 rounded-md border border-ink-200 px-3 py-2 text-sm text-ink-900"
           aria-label="Filtrar por plano"
         />
+        <select
+          value={blocked}
+          onChange={(event) => setBlocked(event.target.value as BlockedOption | '')}
+          className="rounded-md border border-ink-200 px-3 py-2 text-sm text-ink-900"
+          aria-label="Filtrar por bloqueio"
+        >
+          <option value="">Bloqueados e não bloqueados</option>
+          {BLOCKED_OPTIONS.map((option) => (
+            <option key={option} value={option}>
+              {BLOCKED_LABEL[option]}
+            </option>
+          ))}
+        </select>
       </div>
 
       <div className="mt-4 overflow-x-auto rounded-lg border border-ink-200 bg-white">
@@ -133,6 +156,11 @@ export default function AdminUsersPage() {
                   <td className="px-4 py-3">
                     <p className="font-medium text-ink-900">
                       {user.name}
+                      {user.blockedAt ? (
+                        <span className="ml-2 rounded-full bg-danger/10 px-2 py-0.5 text-xs font-medium text-danger">
+                          bloqueado
+                        </span>
+                      ) : null}
                       {user.deletedAt ? (
                         <span className="ml-2 rounded-full bg-ink-100 px-2 py-0.5 text-xs text-ink-600">
                           anonimizado

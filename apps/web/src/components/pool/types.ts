@@ -19,6 +19,15 @@ export type PoolMemberRow = PoolDetail['members'][number]
 export type JoinPreview = RouterOutputs['pool']['joinPreview']
 export type PayoutRow = RouterOutputs['pool']['payout']['list'][number]
 
+/**
+ * Addendum v2 §5 — `bets.byPool` (agente H, `server/routers/bets.ts`): jogos vinculados ao
+ * bolão + comparação entre a soma deles e `Pool.totalCostCents` (o custo declarado que
+ * serviu de base para o valor da cota). Só o `RouterOutputs` é importado daqui — o
+ * procedure em si mora fora do território desta onda (`app/(app)/app/jogos/**` é proibido).
+ */
+export type PoolLinkedBetsData = RouterOutputs['bets']['byPool']
+export type PoolLinkedBet = PoolLinkedBetsData['bets'][number]
+
 export type PoolListScope = 'organizing' | 'participating' | 'all'
 
 /**

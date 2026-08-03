@@ -30,6 +30,16 @@ export default async function AdminLayout({
     redirect('/login')
   }
 
+  // BO-13 — mesma primeira-linha-de-defesa do resto deste layout (docblock acima): um
+  // admin bloqueado não deveria nem ver a casca do backoffice antes de bater em FORBIDDEN
+  // na primeira query. A defesa real é `protectedProcedure` (server/trpc.ts), que recusa
+  // toda procedure para esta sessão de qualquer forma — isto só evita renderizar um layout
+  // que só mostraria erros. `session.user.blockedAt` vem de graça (additionalField do
+  // Better Auth, lib/auth.ts), sem query extra.
+  if (session.user.blockedAt) {
+    redirect('/login')
+  }
+
   const role = session.user.role
   if (!isAdminRole(role)) {
     redirect('/app')

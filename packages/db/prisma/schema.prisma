@@ -184,8 +184,16 @@ model User {
   termsAcceptedAt DateTime? // aceite dos Termos de Uso registrado com timestamp
   pixKeyEncrypted String? // AES-256-GCM — só para organizador de bolão
   pixKeyType      PixKeyType?
+  // Cidade do recebedor, exigida pelo padrão EMV do BR Code (campo 60) ao gerar
+  // o Pix copia-e-cola. Sem ela caímos num fallback genérico.
+  city            String?
   timezone        String      @default("America/Sao_Paulo")
   lastSeenAt      DateTime?
+  // Bloqueio administrativo (BO-13). Diferente de `deletedAt`: a conta continua
+  // existindo e pode ser desbloqueada. Enquanto preenchido, o usuário não
+  // autentica nem passa por `protectedProcedure`.
+  blockedAt       DateTime?
+  blockedReason   String?
   deletedAt       DateTime? // soft delete / anonimização LGPD
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @default(now()) @updatedAt
@@ -206,6 +214,7 @@ model User {
 
   @@unique([tenantId, email])
   @@index([tenantId, deletedAt])
+  @@index([blockedAt])
 }
 
 // ── Better Auth (defaults do prismaAdapter) ─────────────────────────────────

@@ -130,8 +130,11 @@ O agente de UI implementou contra a v1 e encontrou 5 buracos reais. Decisões:
 3. **`PoolCard` ganha `ownerName: string`** — na aba "Participando" é preciso ver
    quem organiza (docs/09 C5).
 4. **`pool.leave` (mutation, membro)** — sair do bolão enquanto `status === 'OPEN'`
-   **e** o pagamento ainda não foi confirmado pelo dono. Confirmado/pago → erro
-   orientando a falar com o organizador (não podemos desfazer um Pix que já ocorreu).
+   **e** o membro ainda estiver em `INVITED` ou `JOINED`.
+   ⚠️ Corrigido após a implementação: o corte é em `PAID` (o próprio membro declarou
+   que pagou), **não** em `CONFIRMED`. A partir da declaração o Pix pode já estar em
+   trânsito, e sair do bolão nesse ponto criaria uma dívida sem contraparte. Erro
+   orientando a falar com o organizador — não podemos desfazer um Pix que já ocorreu.
    Libera as cotas de volta dentro da mesma transação.
 5. **`displayName` é `string`, nunca `null`** — o router resolve
    `user.name ?? guestName ?? 'Participante'`.

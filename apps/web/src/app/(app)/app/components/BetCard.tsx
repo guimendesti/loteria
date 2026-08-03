@@ -9,6 +9,7 @@ import { parseColumns, parseExtraPicks } from '@/server/lib/bet-json'
 import { formatCents } from './format-cents'
 import { ExtraPicksDisplay } from './ExtraPicksDisplay'
 import { DuplicateBetDialog } from './DuplicateBetDialog'
+import { BetPoolBadge } from './BetPoolBadge'
 import { SOURCE_LABEL } from './labels'
 import type { BetCheckItem, BetListItem } from './types'
 
@@ -93,6 +94,7 @@ export function BetCard({ bet }: BetCardProps) {
           {!bet.isActive ? (
             <span className="rounded-full bg-ink-50 px-2 py-0.5 text-xs font-medium text-ink-400">Arquivado</span>
           ) : null}
+          <BetPoolBadge pool={bet.pool} />
         </div>
         <Link href={`/app/jogos/${bet.id}`} className="text-sm font-medium text-brand-500 hover:text-brand-700">
           Ver detalhes →

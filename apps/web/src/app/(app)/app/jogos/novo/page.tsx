@@ -21,6 +21,7 @@ import { setToast } from '../../components/toast'
 import { ColumnsPicker } from '../../components/ColumnsPicker'
 import { MONTH_NAMES } from '../../components/labels'
 import { PaywallDialog } from '../../components/PaywallDialog'
+import { PoolLinkSelect } from '../../components/PoolLinkSelect'
 import { readPaywallError, usePaywall } from '../../components/use-paywall'
 
 /** Apenas modalidades apostáveis pelo motor (Federal não tem tabela de preço). */
@@ -52,6 +53,8 @@ export default function NovoJogoPage() {
   const [contestFromTouched, setContestFromTouched] = useState(false)
   const [quantity, setQuantity] = useState(1)
   const [notes, setNotes] = useState('')
+  // Onda 8b (docs/contracts/onda8-bolao.md) — vincular o jogo a um bolão já na criação.
+  const [poolId, setPoolId] = useState<string | null>(null)
 
   const config = lotterySlug ? getLotteryConfig(lotterySlug) : null
 
@@ -120,6 +123,7 @@ export default function NovoJogoPage() {
     setContestFromTouched(false)
     setQuantity(1)
     setNotes('')
+    setPoolId(null)
   }
 
   function handleSurpresinha() {
@@ -157,6 +161,7 @@ export default function NovoJogoPage() {
       ...(betInput.extra !== undefined ? { extra: betInput.extra } : {}),
       ...(config.format !== 'PICK_N' ? { columns: betInput.columns ?? [] } : {}),
       ...(notes.trim() !== '' ? { notes: notes.trim() } : {}),
+      ...(poolId !== null ? { poolId } : {}),
     })
   }
 
@@ -364,6 +369,11 @@ export default function NovoJogoPage() {
             className="mt-1 w-full rounded-md border border-ink-200 px-3 py-2 text-base"
           />
         </label>
+
+        {/* Onda 8b (docs/contracts/onda8-bolao.md) — vínculo opcional com bolão já na criação. */}
+        <div className="mt-4">
+          <PoolLinkSelect value={poolId} onChange={setPoolId} lotterySlug={config.slug} />
+        </div>
       </div>
 
       {serverErrors && serverErrors.length > 0 ? (
@@ -374,7 +384,7 @@ export default function NovoJogoPage() {
         </ul>
       ) : createMutation.isError && !isPaywallError ? (
         <p className="mt-4 rounded-md bg-danger/10 p-3 text-sm text-danger">
-          Não foi possível salvar o jogo. Tente novamente.
+          {createMutation.error.message || 'Não foi possível salvar o jogo. Tente novamente.'}
         </p>
       ) : null}
 

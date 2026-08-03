@@ -30,6 +30,7 @@ import { applyHistoryCutoff } from '@/server/lib/entitlements'
 import { columnsSchema, extraPicksSchema, lotterySlugSchema, numbersSchema } from '@/server/lib/lottery-schema'
 import { assertValidContestRange, buildBetInput, calculateBetCostCents } from '@/server/lib/bet-cost'
 import { parseColumns, parseExtraPicks, parseTierCounts } from '@/server/lib/bet-json'
+import { assertBetMatchesPool, loadEditablePoolOwnedBy } from '@/server/lib/bet-pool'
 
 /**
  * Gates de docs/05 §5.4 aplicados nesta onda: **G1** (`create`/`duplicate`,
@@ -55,6 +56,9 @@ const createInput = z.object({
   extra: extraPicksSchema.optional(),
   columns: columnsSchema.optional(),
   notes: z.string().max(500).optional(),
+  // Onda 8b (docs/contracts/onda8-bolao.md) — vincular o jogo a um bolão já na
+  // criação é opcional; ver `assignPool` para vincular/desvincular depois.
+  poolId: z.string().min(1).optional(),
   ...contestRangeFields,
 })
 
@@ -80,8 +84,19 @@ const duplicateInput = z.object({
   ...contestRangeFields,
 })
 
+/** Onda 8b — `poolId: null` desvincula; `poolId: string` vincula/troca de bolão. */
+const assignPoolInput = z.object({
+  betId: z.string().min(1),
+  poolId: z.string().min(1).nullable(),
+})
+
+const byPoolInput = z.object({ poolId: z.string().min(1) })
+
 const betInclude = {
   lottery: { select: { slug: true, name: true } },
+  // Onda 8b — permite à UI mostrar "este jogo já pertence ao bolão X" (e em que
+  // estado) sem uma segunda chamada; `null` = jogo pessoal, sem bolão.
+  pool: { select: { id: true, name: true, status: true } },
 } satisfies Prisma.BetInclude
 
 const checkSelect = {
@@ -210,6 +225,16 @@ export const betsRouter = router({
       throw new TRPCError({ code: 'NOT_FOUND', message: `Modalidade "${input.lotterySlug}" não encontrada.` })
     }
 
+    // Onda 8b — vínculo opcional com um bolão já na criação. Mesmas regras de
+    // `assignPool` (dono do bolão, modalidade, faixa de concursos, estado
+    // editável) — `loadEditablePoolOwnedBy` lança `TRPCError` explicando qual
+    // regra barrou, então nada é criado se o vínculo pedido for inválido.
+    let pool: Awaited<ReturnType<typeof loadEditablePoolOwnedBy>> | null = null
+    if (input.poolId !== undefined) {
+      pool = await loadEditablePoolOwnedBy(ctx.prisma, input.poolId, ctx.session.user.id)
+      assertBetMatchesPool({ lotteryId: lottery.id, contestFrom: input.contestFrom, contestTo: input.contestTo }, pool)
+    }
+
     const costCents = calculateBetCostCents(config, betInput, input.contestFrom, input.contestTo)
 
     const data: Prisma.BetUncheckedCreateInput = {
@@ -223,6 +248,7 @@ export const betsRouter = router({
       ...(input.notes !== undefined ? { notes: input.notes } : {}),
       ...(input.extra !== undefined ? { extraPicks: input.extra } : {}),
       ...(input.columns !== undefined ? { columns: input.columns } : {}),
+      ...(pool !== null ? { poolId: pool.id } : {}),
     }
 
     return ctx.prisma.bet.create({ data, include: betInclude })
@@ -394,6 +420,43 @@ export const betsRouter = router({
     })
   }),
 
+  /**
+   * Onda 8b (docs/contracts/onda8-bolao.md) — grava/apaga `Bet.poolId`. Único caminho
+   * para vincular/desvincular DEPOIS da criação (`create` também aceita `poolId` na
+   * hora de cadastrar o jogo — ver acima). `poolId: null` desvincula.
+   *
+   * Toda autorização e integridade do vínculo mora em `server/lib/bet-pool.ts`
+   * (território desta tarefa; NÃO é `server/lib/pool/**`, que pertence a outro
+   * agente) — este handler só resolve identidades e persiste a coluna.
+   */
+  assignPool: protectedProcedure.input(assignPoolInput).mutation(async ({ ctx, input }) => {
+    const userId = ctx.session.user.id
+    const bet = await ctx.prisma.bet.findUnique({
+      where: { id: input.betId },
+      select: { id: true, userId: true, lotteryId: true, contestFrom: true, contestTo: true, poolId: true },
+    })
+    if (!bet || bet.userId !== userId) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'Jogo não encontrado.' })
+    }
+
+    // Se o jogo já pertence a OUTRO bolão, esse vínculo só pode ser desfeito
+    // enquanto aquele bolão ainda estiver editável — mesma trava de congelamento
+    // que vale para o destino, aplicada também à origem (ninguém arranca um jogo
+    // de um bolão já com dinheiro registrado só para mudá-lo de lugar).
+    if (bet.poolId !== null && bet.poolId !== input.poolId) {
+      await loadEditablePoolOwnedBy(ctx.prisma, bet.poolId, userId)
+    }
+
+    if (input.poolId === null) {
+      return ctx.prisma.bet.update({ where: { id: bet.id }, data: { poolId: null }, include: betInclude })
+    }
+
+    const pool = await loadEditablePoolOwnedBy(ctx.prisma, input.poolId, userId)
+    assertBetMatchesPool(bet, pool)
+
+    return ctx.prisma.bet.update({ where: { id: bet.id }, data: { poolId: pool.id }, include: betInclude })
+  }),
+
   /** docs/08 CL-17 — duplicar para novo intervalo de concursos (mesmas dezenas/extra/colunas). */
   duplicate: protectedProcedure.input(duplicateInput).mutation(async ({ ctx, input }) => {
     assertValidContestRange(input.contestFrom, input.contestTo)
@@ -435,6 +498,47 @@ export const betsRouter = router({
     }
 
     return ctx.prisma.bet.create({ data, include: betInclude })
+  }),
+
+  /**
+   * Onda 8b (docs/contracts/onda8-bolao.md, missão §2) — "listagem de apostas do
+   * bolão" no território deste router: jogos vinculados a `poolId` + a soma do
+   * custo deles comparada com `Pool.totalCostCents`. `Pool.totalCostCents` é a
+   * base do valor de cota que os participantes já pagaram — se a soma dos jogos
+   * vinculados divergir, o organizador PRECISA ver (`matchesDeclaredCost`/
+   * `costDiffCents`), nunca um ajuste silencioso. Só o dono do bolão vê esta
+   * consolidação financeira (mesmo critério de autorização de `assignPool`).
+   */
+  byPool: protectedProcedure.input(byPoolInput).query(async ({ ctx, input }) => {
+    const userId = ctx.session.user.id
+    const pool = await ctx.prisma.pool.findUnique({
+      where: { id: input.poolId },
+      select: { ownerId: true, totalCostCents: true },
+    })
+    if (!pool) throw new TRPCError({ code: 'NOT_FOUND', message: 'Bolão não encontrado.' })
+    if (pool.ownerId !== userId) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: 'Só o organizador do bolão vê a consolidação de custo dos jogos vinculados.',
+      })
+    }
+
+    const bets = await ctx.prisma.bet.findMany({
+      where: { poolId: input.poolId },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      include: betInclude,
+    })
+
+    const linkedCostCents = bets.reduce((sum, bet) => sum + bet.costCents, 0n)
+
+    return {
+      bets,
+      betCount: bets.length,
+      linkedCostCents,
+      declaredCostCents: pool.totalCostCents,
+      costDiffCents: linkedCostCents - pool.totalCostCents,
+      matchesDeclaredCost: linkedCostCents === pool.totalCostCents,
+    }
   }),
 
   /** docs/08 CL-01 — cards de resumo do dashboard. */

@@ -41,15 +41,37 @@ import { guardOrThrow, protectedProcedure, publicProcedure, router } from '@/ser
 import { decryptSecret } from '@/server/lib/crypto'
 import { resolveEntitlements } from '@/server/lib/entitlements'
 import { lotterySlugSchema } from '@/server/lib/lottery-schema'
+import { normalizePixKeyForPayload } from '@/server/lib/pix-key'
 import { sharesRatioDecimalString } from '@/server/lib/pool/decimal'
 import { generateUniqueInviteCode, INVITE_CODE_TTL_DAYS } from '@/server/lib/pool/invite-code'
+import { enqueuePoolNotify } from '@/server/lib/pool/notify-queue'
 import { buildPixTxid, DEFAULT_MERCHANT_CITY, maskOwnerPixKey, toPixKeyKind } from '@/server/lib/pool/pix'
 import {
   assertCanConfirmPayment,
   assertCanDeclarePayment,
+  assertCanLeavePool,
   assertCanMarkPayoutPaid,
   assertValidPoolTransition,
 } from '@/server/lib/pool/state-machine'
+
+/**
+ * Enfileira um evento de `pool-notify` sem nunca derrubar a mutation que acabou de
+ * persistir com sucesso (dinheiro/estado já gravados nesse ponto — a notificação é
+ * "nice to have"). `enqueuePoolNotify` já engole erros internamente (Redis fora do ar,
+ * `REDIS_URL` ausente); este `try/catch` é defesa em profundidade — não confiar só nisso,
+ * caso a implementação daquele módulo mude e passe a rejeitar.
+ */
+async function notifyPoolEventOrLog(payload: Parameters<typeof enqueuePoolNotify>[0]): Promise<void> {
+  try {
+    await enqueuePoolNotify(payload)
+  } catch (error) {
+    console.error('[pool] falha ao enfileirar notificação — mutation já concluída, seguindo.', {
+      event: payload.event,
+      poolId: payload.poolId,
+      error,
+    })
+  }
+}
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000
 function addDays(date: Date, days: number): Date {
@@ -199,7 +221,7 @@ export const poolRouter = router({
     const pools = await ctx.prisma.pool.findMany({
       where: { ...scopeWhere, ...(input.status ? { status: input.status } : {}) },
       orderBy: { createdAt: 'desc' },
-      include: { lottery: { select: { slug: true, name: true } } },
+      include: { lottery: { select: { slug: true, name: true } }, owner: { select: { name: true } } },
     })
 
     if (pools.length === 0) return []
@@ -239,6 +261,8 @@ export const poolRouter = router({
         sharesTaken: sharesTakenByPool.get(pool.id) ?? 0,
         shareValueCents: pool.shareValueCents,
         role,
+        // Addendum v2 §3: aba "Participando" precisa mostrar quem organiza (docs/09 C5).
+        ownerName: pool.owner.name,
         pendingPayments: role === 'OWNER' ? pendingByPool.get(pool.id) ?? 0 : null,
       }
     })
@@ -251,6 +275,7 @@ export const poolRouter = router({
       where: { id: input.poolId },
       include: {
         lottery: { select: { slug: true, name: true } },
+        owner: { select: { name: true } },
         members: {
           orderBy: { createdAt: 'asc' },
           include: {
@@ -295,6 +320,7 @@ export const poolRouter = router({
       sharesTaken,
       shareValueCents: pool.shareValueCents,
       role,
+      ownerName: pool.owner.name,
       pendingPayments,
       description: pool.description,
       // ⚠️ invariante 5 do contrato: NUNCA vaza para quem não é dono.
@@ -307,7 +333,8 @@ export const poolRouter = router({
           : null,
       members: pool.members.map((member) => ({
         id: member.id,
-        displayName: member.user?.name ?? member.guestName,
+        // Addendum v2 §5: `displayName` é `string` garantido, nunca `null`.
+        displayName: member.user?.name ?? member.guestName ?? 'Participante',
         userId: member.userId,
         shares: member.shares,
         amountCents: member.amountCents,
@@ -353,10 +380,20 @@ export const poolRouter = router({
       throw new TRPCError({ code: 'FORBIDDEN', message: 'Só o organizador do bolão pode anexar o comprovante.' })
     }
 
-    await ctx.prisma.pool.update({
+    const updated = await ctx.prisma.pool.update({
       where: { id: input.poolId },
       data: { receiptUrl: input.receiptUrl, receiptUploadedAt: new Date() },
     })
+
+    // `attachedAt` no `dedupeScope` do worker: um reattach de verdade (timestamp novo)
+    // vira notificação nova; retry da mesma request (mesmo timestamp) não duplica.
+    if (updated.receiptUploadedAt) {
+      await notifyPoolEventOrLog({
+        event: 'receipt.attached',
+        poolId: input.poolId,
+        attachedAt: updated.receiptUploadedAt.toISOString(),
+      })
+    }
 
     return { ok: true as const }
   }),
@@ -450,7 +487,7 @@ export const poolRouter = router({
     confirmPayment: protectedProcedure.input(memberIdInput).mutation(async ({ ctx, input }) => {
       const member = await ctx.prisma.poolMember.findUnique({
         where: { id: input.memberId },
-        select: { id: true, status: true, amountCents: true, pool: { select: { ownerId: true } } },
+        select: { id: true, poolId: true, status: true, amountCents: true, pool: { select: { ownerId: true } } },
       })
       if (!member) throw new TRPCError({ code: 'NOT_FOUND', message: 'Participante não encontrado.' })
       if (member.pool.ownerId !== ctx.session.user.id) {
@@ -459,7 +496,7 @@ export const poolRouter = router({
 
       assertCanConfirmPayment(member.status)
 
-      const [, updatedMember] = await ctx.prisma.$transaction([
+      const [payment, updatedMember] = await ctx.prisma.$transaction([
         ctx.prisma.poolPayment.create({
           data: {
             poolMemberId: member.id,
@@ -474,6 +511,13 @@ export const poolRouter = router({
           select: { status: true },
         }),
       ])
+
+      await notifyPoolEventOrLog({
+        event: 'payment.confirmed',
+        poolId: member.poolId,
+        poolMemberId: member.id,
+        poolPaymentId: payment.id,
+      })
 
       return { status: updatedMember.status }
     }),
@@ -490,7 +534,7 @@ export const poolRouter = router({
       .mutation(async ({ ctx, input }) => {
         const member = await ctx.prisma.poolMember.findUnique({
           where: { id: input.memberId },
-          select: { id: true, userId: true, status: true, amountCents: true },
+          select: { id: true, poolId: true, userId: true, status: true, amountCents: true },
         })
         if (!member) throw new TRPCError({ code: 'NOT_FOUND', message: 'Participante não encontrado.' })
         if (member.userId !== ctx.session.user.id) {
@@ -499,7 +543,7 @@ export const poolRouter = router({
 
         assertCanDeclarePayment(member.status)
 
-        const [, updatedMember] = await ctx.prisma.$transaction([
+        const [payment, updatedMember] = await ctx.prisma.$transaction([
           ctx.prisma.poolPayment.create({
             data: {
               poolMemberId: member.id,
@@ -515,6 +559,13 @@ export const poolRouter = router({
             select: { status: true },
           }),
         ])
+
+        await notifyPoolEventOrLog({
+          event: 'payment.declared',
+          poolId: member.poolId,
+          poolMemberId: member.id,
+          poolPaymentId: payment.id,
+        })
 
         return { status: updatedMember.status }
       }),
@@ -533,7 +584,7 @@ export const poolRouter = router({
               ownerId: true,
               ownerPixKeyType: true,
               ownerPixKeyEnc: true,
-              owner: { select: { name: true } },
+              owner: { select: { name: true, city: true } },
             },
           },
         },
@@ -554,24 +605,34 @@ export const poolRouter = router({
         })
       }
 
-      const key = decryptSecret(member.pool.ownerPixKeyEnc)
+      // Normaliza NA LEITURA (`server/lib/pix-key.ts`): `account.ts` grava telefone como
+      // dígitos soltos e chave aleatória com formato frouxo, mas o core exige E.164
+      // (`+55...`) e UUID v4 — sem isto, todo organizador com chave de telefone tinha o
+      // Pix do bolão falhando em runtime, sem aviso.
+      const key = normalizePixKeyForPayload(member.pool.ownerPixKeyType, decryptSecret(member.pool.ownerPixKeyEnc))
 
       try {
         return buildPixPayload({
           key,
           keyKind: toPixKeyKind(member.pool.ownerPixKeyType),
           merchantName: member.pool.owner.name.slice(0, 25),
-          merchantCity: DEFAULT_MERCHANT_CITY,
+          // `merchantCity` real (`User.city`, migration `20260803T2_user_block_and_city`),
+          // com fallback quando o organizador não preencheu.
+          merchantCity: member.pool.owner.city ?? DEFAULT_MERCHANT_CITY,
           amountCents: member.amountCents,
           txid: buildPixTxid(member.pool.id, member.id),
         })
       } catch (error) {
-        // `buildPixPayload` (`@lotopro/core`) lança `Error` simples em chave Pix
-        // inválida para o `keyKind` (nunca ecoa a chave) — traduz para o formato de
-        // erro do resto do router (`TRPCError` + mensagem PT-BR já vem pronta do core).
+        // `buildPixPayload` (`@lotopro/core`) lança `Error` simples em chave Pix inválida
+        // para o `keyKind` (nunca ecoa a chave). Mesmo já normalizada, a chave pode
+        // continuar inválida (ex.: telefone com DDD errado no cadastro) — nesse caso a
+        // mensagem genérica do core não ajuda o participante, que não pode editar a
+        // chave do organizador; orienta explicitamente quem PODE corrigir.
         throw new TRPCError({
           code: 'BAD_REQUEST',
-          message: error instanceof Error ? error.message : 'Não foi possível gerar o Pix deste bolão.',
+          message:
+            'A chave Pix cadastrada pelo organizador não está em um formato válido. Peça para ' +
+            'ele recadastrar em Conta → Chave Pix.',
           cause: error,
         })
       }
@@ -704,8 +765,47 @@ export const poolRouter = router({
         return created.id
       })
 
+      // Só o join self-service dispara `member.joined` — `members.addGuest` não: quem
+      // chama ali é o próprio dono, ele já sabe que adicionou o convidado.
+      await notifyPoolEventOrLog({ event: 'member.joined', poolId: pool.id, poolMemberId: memberId })
+
       return { poolId: pool.id, memberId }
     }),
+
+  /** `pool.leave` — o próprio membro sai (Addendum v2 §4). Só com o bolão ainda "aberto" e
+   * antes de qualquer declaração/confirmação de pagamento — depois disso um Pix P2P pode já
+   * ter circulado e o LotoPro não tem como desfazê-lo (`assertCanLeavePool`, mensagem
+   * orienta a falar com o organizador). Libera a cota imediatamente: `status: REMOVED` sai
+   * da recontagem de `sumSharesTaken`/`canAcceptShares`, mesmo mecanismo de
+   * `members.remove`. Recheck do status feito DENTRO da transação para não perder uma
+   * corrida contra o dono confirmando o pagamento no mesmo instante. */
+  leave: protectedProcedure.input(poolIdInput).mutation(async ({ ctx, input }) => {
+    const userId = ctx.session.user.id
+    const pool = await ctx.prisma.pool.findUnique({ where: { id: input.poolId }, select: { status: true } })
+    if (!pool) throw new TRPCError({ code: 'NOT_FOUND', message: 'Bolão não encontrado.' })
+    if (pool.status !== PoolStatus.OPEN) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: 'Só é possível sair do bolão enquanto ele estiver "aberto".',
+      })
+    }
+
+    await ctx.prisma.$transaction(async (tx) => {
+      const member = await tx.poolMember.findUnique({
+        where: { poolId_userId: { poolId: input.poolId, userId } },
+        select: { id: true, status: true },
+      })
+      if (!member || member.status === MemberStatus.REMOVED) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Você não participa deste bolão.' })
+      }
+
+      assertCanLeavePool(member.status)
+
+      await tx.poolMember.update({ where: { id: member.id }, data: { status: MemberStatus.REMOVED } })
+    })
+
+    return { ok: true as const }
+  }),
 
   // ───────────────────────────────────────────────────────────────────────────
   // pool.payout.*
@@ -777,6 +877,8 @@ export const poolRouter = router({
               })
             }),
           )
+
+          await notifyPoolEventOrLog({ event: 'payout.computed', poolId: pool.id, contestId: input.contestId })
         }
 
         return result
@@ -813,6 +915,10 @@ export const poolRouter = router({
 
       return payouts.map((payout) => ({
         id: payout.id,
+        // Addendum v2 §1: sem `memberId`/`isMine` o participante não consegue destacar a
+        // própria linha no rateio.
+        memberId: payout.poolMemberId,
+        isMine: payout.poolMember.userId === actorId,
         memberName: payout.poolMember.user?.name ?? payout.poolMember.guestName ?? 'Participante',
         contestNumber: contestNumberById.get(payout.contestId) ?? 0,
         sharesRatio: payout.sharesRatio.toString(),
@@ -843,6 +949,70 @@ export const poolRouter = router({
         })
 
         return { status: updated.status }
+      }),
+
+    /**
+     * `pool.payout.pixPayload` — Addendum v2 §2. SÓ o dono (é ele quem faz o Pix do rateio
+     * pro participante). Gera o EMV com a chave do PARTICIPANTE (`User.pixKeyEncrypted`),
+     * nunca a do organizador — direção oposta de `payments.pixPayload`. `null` quando o
+     * membro é convidado sem conta OU não tem chave Pix cadastrada; a UI então explica que
+     * o repasse é combinado fora do app (contrato: "continua sendo P2P — só montamos o
+     * código, não movemos valor").
+     */
+    pixPayload: protectedProcedure
+      .input(z.object({ payoutId: z.string().min(1) }))
+      .query(async ({ ctx, input }) => {
+        const payout = await ctx.prisma.poolPayout.findUnique({
+          where: { id: input.payoutId },
+          select: {
+            id: true,
+            poolId: true,
+            poolMemberId: true,
+            amountCents: true,
+            pool: { select: { ownerId: true } },
+            poolMember: {
+              select: {
+                user: { select: { name: true, city: true, pixKeyEncrypted: true, pixKeyType: true } },
+              },
+            },
+          },
+        })
+        if (!payout) throw new TRPCError({ code: 'NOT_FOUND', message: 'Rateio não encontrado.' })
+        if (payout.pool.ownerId !== ctx.session.user.id) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: 'Só o organizador do bolão pode gerar o Pix do rateio.' })
+        }
+
+        const recipient = payout.poolMember.user
+        // `user` vem `null` quando `PoolMember.userId` é `null` (convidado sem conta) —
+        // Prisma já resolve isso pela FK, não precisa checar `userId` à parte.
+        if (!recipient || !recipient.pixKeyType || !recipient.pixKeyEncrypted) {
+          return null
+        }
+
+        // Mesma normalização de `payments.pixPayload` (`server/lib/pix-key.ts`).
+        const key = normalizePixKeyForPayload(recipient.pixKeyType, decryptSecret(recipient.pixKeyEncrypted))
+
+        try {
+          return buildPixPayload({
+            key,
+            keyKind: toPixKeyKind(recipient.pixKeyType),
+            merchantName: recipient.name.slice(0, 25),
+            merchantCity: recipient.city ?? DEFAULT_MERCHANT_CITY,
+            amountCents: payout.amountCents,
+            // `payout.id` (não `poolMemberId`) — um membro pode ter mais de um `PoolPayout`
+            // (um por concurso, `@@unique([poolMemberId, contestId])`); usar só o memberId
+            // colidiria entre concursos, e colidiria com o txid de `payments.pixPayload`
+            // (cota, direção oposta) para o mesmo par (bolão, membro).
+            txid: buildPixTxid(payout.poolId, payout.id),
+          })
+        } catch {
+          // A chave do PARTICIPANTE está num formato que nem a normalização resolve. Quem
+          // chama esta query é o DONO — ele não tem como corrigir a conta de outra pessoa
+          // aqui, então não há TRPCError "acionável" a devolver. Trata como "sem chave
+          // utilizável": mesmo `null` do caso de convidado sem conta; a UI já sabe explicar
+          // que o repasse é combinado fora do app.
+          return null
+        }
       }),
   }),
 })
